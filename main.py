@@ -64,22 +64,18 @@ def main():
     api_key = load_ynab_api_key(prompt_save=True)
     ynab_configuration = ynab.Configuration(access_token=api_key)
     print("YNAB configuration created.")
+
     with ynab.ApiClient(ynab_configuration) as api_client:
         plans_api = ynab.PlansApi(api_client)
-        plans_response = plans_api.get_plans()
-        plans = plans_response.data.plans
+        plans = plans_api.get_plans().data.plans
+        main_plan = [p for p in plans if p.name == "My Budget"][0]
+        print(f"Found plan: {main_plan.name} (ID: {main_plan.id})")
 
-        print(f"Found {len(plans)} budget(s):")
-        for index, plan in enumerate(plans, start=1):
-            print(f"{index}. {plan.name}")
-            print(f"   ID: {plan.id}")
-            print(f"   Currency: {plan.currency_format.iso_code} ({plan.currency_format.currency_symbol})")
-            print(f"   Range: {plan.first_month} to {plan.last_month}")
-            print(f"   Last modified: {plan.last_modified_on}")
-
-        if plans_response.data.default_plan is not None:
-            print(f"Default budget: {plans_response.data.default_plan.name}")
-
+        transactions_api = ynab.TransactionsApi(api_client)
+        transactions = transactions_api.get_transactions(str(main_plan.id), since_date="2026-01-01").data.transactions
+        print(f"Transactions in '{main_plan.name}':")
+        for t in transactions:
+            print(f"  - {t.var_date}: {t.amount / 1000:.2f} ({t.payee_name})")
 
 if __name__ == "__main__":
     main()
