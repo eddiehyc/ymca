@@ -77,5 +77,12 @@ def main():
         for t in transactions:
             print(f"  - {t.var_date}: {t.amount / 1000:.2f} ({t.payee_name})")
 
+        payees_api = ynab.PayeesApi(api_client)
+        payees = payees_api.get_payees(str(main_plan.id)).data.payees
+        print(f"Payees in '{main_plan.name}':")
+        for p in payees:
+            print(f"  - {p.name} (ID: {p.id})")
+
+
 if __name__ == "__main__":
     main()
