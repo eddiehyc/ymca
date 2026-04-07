@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import getpass
+import json
 import ynab
 
 
@@ -64,24 +65,41 @@ def main():
     api_key = load_ynab_api_key(prompt_save=True)
     ynab_configuration = ynab.Configuration(access_token=api_key)
     print("YNAB configuration created.")
+    server_knowledge_path = Path.cwd() / ".ynab_server_knowledge"
+    try:
+        last_known_server_knowledge = int(server_knowledge_path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError):
+        last_known_server_knowledge = 0
 
     with ynab.ApiClient(ynab_configuration) as api_client:
-        plans_api = ynab.PlansApi(api_client)
-        plans = plans_api.get_plans().data.plans
-        main_plan = [p for p in plans if p.name == "My Budget"][0]
-        print(f"Found plan: {main_plan.name} (ID: {main_plan.id})")
-
         transactions_api = ynab.TransactionsApi(api_client)
-        transactions = transactions_api.get_transactions(str(main_plan.id), since_date="2026-01-01").data.transactions
-        print(f"Transactions in '{main_plan.name}':")
-        for t in transactions:
-            print(f"  - {t.var_date}: {t.amount / 1000:.2f} ({t.payee_name})")
+        response = transactions_api.get_transactions(
+            "last-used", last_knowledge_of_server=last_known_server_knowledge
+        )
 
-        payees_api = ynab.PayeesApi(api_client)
-        payees = payees_api.get_payees(str(main_plan.id)).data.payees
-        print(f"Payees in '{main_plan.name}':")
-        for p in payees:
-            print(f"  - {p.name} (ID: {p.id})")
+    data = response.data
+    new_transactions = getattr(data, "transactions", []) or []
+    for transaction in new_transactions:
+        print(json.dumps(_serialize_for_display(transaction), indent=2, sort_keys=True, default=str))
+
+    server_knowledge = getattr(data, "server_knowledge", last_known_server_knowledge)
+    server_knowledge_path.write_text(f"{server_knowledge}\n", encoding="utf-8")
+
+
+def _serialize_for_display(value):
+    if hasattr(value, "to_dict"):
+        return _serialize_for_display(value.to_dict())
+    if hasattr(value, "model_dump"):
+        return _serialize_for_display(value.model_dump())
+    if isinstance(value, dict):
+        return {key: _serialize_for_display(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_for_display(item) for item in value]
+    if hasattr(value, "__dict__"):
+        return _serialize_for_display(vars(value))
+    return value
+
+
 
 
 if __name__ == "__main__":
