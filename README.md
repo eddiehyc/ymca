@@ -13,6 +13,7 @@ uv run ymca config check
 uv run ymca discover
 uv run ymca convert
 uv run ymca convert --apply
+uv run python scripts/get_account_delta.py --last-server-knowledge 123
 # one-time legacy memo migration, dry-run first
 uv run python scripts/migrate_legacy_fx_memos.py
 uv run python scripts/migrate_legacy_fx_memos.py --apply

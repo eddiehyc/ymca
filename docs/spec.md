@@ -55,6 +55,14 @@ Lists visible YNAB plan names and account names to help fill config.
 - When `--apply` is used, processes configured accounts one at a time so later account fetches see any transfer-side memo changes from earlier writes
 - Uses one bulk `update_transactions` call per account during apply runs to reduce the chance of YNAB rate limiting
 
+### `uv run python scripts/get_account_delta.py --last-server-knowledge N [--config PATH] [--account ALIAS]...`
+
+- Read-only helper for debugging YNAB delta sync behavior
+- Reads the same YMCA YAML config and secret sources as the CLI
+- Resolves configured account aliases from the config file
+- Calls YNAB `get_transactions_by_account` for each selected account with the supplied `last_knowledge_of_server`
+- Prints changed transactions per account, plus the requested and returned server knowledge values
+
 ### `uv run python scripts/fix_double_converted_transactions.py [--config PATH] [--account ALIAS]... [--apply]`
 
 - One-time helper for repairing transactions that were converted twice by older tooling
