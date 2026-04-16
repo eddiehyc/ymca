@@ -4,12 +4,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from ymca.config import load_config
-from ymca.errors import YmcaError
-from ymca.legacy_memo_migration import (
+from scripts._deprecation import print_deprecation_warning
+from scripts._legacy_memo_migration import (
     apply_legacy_memo_migration_plan,
     build_legacy_memo_migration_plan,
 )
+from ymca.config import load_config
+from ymca.errors import YmcaError
 from ymca.paths import default_config_path
 from ymca.secrets import load_api_key
 from ymca.ynab_client import YnabClient
@@ -18,6 +19,7 @@ from ymca.ynab_client import YnabClient
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    print_deprecation_warning("migrate_legacy_fx_memos.py")
 
     try:
         config = load_config(args.config)

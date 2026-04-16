@@ -4,11 +4,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from ymca.config import load_config
-from ymca.double_conversion_fix import (
+from scripts._deprecation import print_deprecation_warning
+from scripts._double_conversion_fix import (
     apply_double_conversion_fix_plan,
     build_double_conversion_fix_plan,
 )
+from ymca.config import load_config
 from ymca.errors import YmcaError
 from ymca.memo import format_milliunits
 from ymca.paths import default_config_path
@@ -19,6 +20,7 @@ from ymca.ynab_client import YnabClient
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    print_deprecation_warning("fix_double_converted_transactions.py")
 
     try:
         config = load_config(args.config)

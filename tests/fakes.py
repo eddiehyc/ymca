@@ -23,13 +23,11 @@ class FakeGateway:
     transaction_snapshots_by_account: dict[str, list[TransactionSnapshot]] = field(
         default_factory=dict
     )
-    transaction_snapshots: list[TransactionSnapshot] = field(default_factory=list)
     list_plans_error: ApiError | None = None
     updates: list[TransactionUpdateRequest] = field(default_factory=list)
     update_batches: list[tuple[str, tuple[TransactionUpdateRequest, ...]]] = field(
         default_factory=list
     )
-    list_transactions_calls: list[tuple[str, date | None, int | None]] = field(default_factory=list)
     list_transactions_by_account_calls: list[tuple[str, str, date | None, int | None]] = field(
         default_factory=list
     )
@@ -42,18 +40,6 @@ class FakeGateway:
 
     def list_accounts(self, plan_id: str) -> AccountSnapshot:
         return self.account_snapshots[plan_id]
-
-    def list_transactions(
-        self,
-        plan_id: str,
-        *,
-        since_date: date | None = None,
-        last_knowledge_of_server: int | None = None,
-    ) -> TransactionSnapshot:
-        self.list_transactions_calls.append((plan_id, since_date, last_knowledge_of_server))
-        if not self.transaction_snapshots:
-            raise AssertionError("No transaction snapshot prepared.")
-        return self.transaction_snapshots.pop(0)
 
     def list_transactions_by_account(
         self,

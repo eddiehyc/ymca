@@ -108,6 +108,7 @@ fx_rates:
     assert "- 2026-04-10 travel_hkd: 12.340" in captured.out
     assert "memo: Dinner" in captured.out
     assert "Account cash_hkd (Cash HKD) server_knowledge=50 changed=0" in captured.out
+    assert "deprecated" in captured.err.lower()
 
 
 def test_get_account_delta_script_limits_to_selected_account(

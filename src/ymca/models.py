@@ -69,6 +69,7 @@ class RemoteAccount:
     id: str
     name: str
     deleted: bool
+    closed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,44 +171,6 @@ class PreparedConversion:
     fetched_transactions: int
     fetched_server_knowledge: int
     updates: tuple[PreparedUpdate, ...]
-    skipped: tuple[SkippedTransaction, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyMemoMigrationUpdate:
-    transaction_id: str
-    date: date
-    account_alias: str
-    old_memo: str
-    new_memo: str
-    request: TransactionUpdateRequest
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyMemoMigrationPlan:
-    bindings: ResolvedBindings
-    scanned_transactions: int
-    updates: tuple[LegacyMemoMigrationUpdate, ...]
-    skipped: tuple[SkippedTransaction, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class DoubleConversionFixUpdate:
-    transaction_id: str
-    date: date
-    account_alias: str
-    old_amount_milliunits: int
-    new_amount_milliunits: int
-    old_memo: str
-    new_memo: str
-    request: TransactionUpdateRequest
-
-
-@dataclass(frozen=True, slots=True)
-class DoubleConversionFixPlan:
-    bindings: ResolvedBindings
-    scanned_transactions: int
-    updates: tuple[DoubleConversionFixUpdate, ...]
     skipped: tuple[SkippedTransaction, ...]
 
 

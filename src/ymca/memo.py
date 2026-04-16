@@ -46,12 +46,11 @@ def build_fx_marker(
     source_currency: str,
     rate_text: str,
     pair_label: str,
-    always_show_sign: bool = False,
+    transfer_prefix: bool = False,
 ) -> str:
-    source_amount = format_milliunits(
+    source_amount = format_memo_milliunits(
         source_amount_milliunits,
-        places=2,
-        always_show_sign=always_show_sign,
+        transfer_prefix=transfer_prefix,
     )
     return f"[FX] {source_amount} {source_currency} (rate: {rate_text} {pair_label})"
 
@@ -140,6 +139,27 @@ def format_milliunits(
         amount = abs(amount)
     sign = "+" if always_show_sign else ""
     return f"{amount:{sign},.{places}f}"
+
+
+def format_memo_milliunits(
+    amount_milliunits: int,
+    *,
+    transfer_prefix: bool = False,
+) -> str:
+    amount_value = amount_milliunits
+    if transfer_prefix:
+        amount_value = abs(amount_value)
+
+    amount = (Decimal(amount_value) / _THOUSAND).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+    if amount == 0:
+        amount = abs(amount)
+
+    text = f"{amount:,.2f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if transfer_prefix:
+        return f"+/-{text}"
+    return text
 
 
 def _milliunits_from_amount_text(amount_text: str) -> int:

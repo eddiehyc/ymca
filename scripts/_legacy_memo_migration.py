@@ -2,19 +2,39 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import date
 
-from .conversion import YnabGateway, resolve_bindings
-from .errors import ConfigError, UserInputError
-from .memo import has_fx_marker, has_legacy_fx_marker, replace_legacy_fx_marker
-from .models import (
+from ymca.conversion import YnabGateway, resolve_bindings
+from ymca.errors import ConfigError, UserInputError
+from ymca.memo import has_fx_marker, has_legacy_fx_marker, replace_legacy_fx_marker
+from ymca.models import (
     AccountConfig,
-    LegacyMemoMigrationPlan,
-    LegacyMemoMigrationUpdate,
     PlanConfig,
+    RemoteTransactionDetail,
     ResolvedBindings,
     SkippedTransaction,
     TransactionUpdateRequest,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyMemoMigrationUpdate:
+    transaction_id: str
+    date: date
+    account_alias: str
+    old_memo: str
+    new_memo: str
+    use_single_update: bool
+    request: TransactionUpdateRequest
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyMemoMigrationPlan:
+    bindings: ResolvedBindings
+    scanned_transactions: int
+    updates: tuple[LegacyMemoMigrationUpdate, ...]
+    skipped: tuple[SkippedTransaction, ...]
 
 
 def build_legacy_memo_migration_plan(
@@ -74,6 +94,19 @@ def build_legacy_memo_migration_plan(
                 )
                 continue
 
+            detail = gateway.get_transaction_detail(resolved_bindings.plan_id, transaction.id)
+            detail_skip_reason = _detail_skip_reason(detail)
+            if detail_skip_reason is not None:
+                skipped.append(
+                    SkippedTransaction(
+                        transaction_id=detail.id,
+                        date=detail.date,
+                        account_alias=account.alias,
+                        reason=detail_skip_reason,
+                    )
+                )
+                continue
+
             updates.append(
                 LegacyMemoMigrationUpdate(
                     transaction_id=transaction.id,
@@ -81,6 +114,7 @@ def build_legacy_memo_migration_plan(
                     account_alias=account.alias,
                     old_memo=transaction.memo,
                     new_memo=new_memo,
+                    use_single_update=detail.subtransaction_count > 0,
                     request=TransactionUpdateRequest(
                         transaction_id=transaction.id,
                         amount_milliunits=None,
@@ -104,11 +138,20 @@ def apply_legacy_memo_migration_plan(
 ) -> int:
     grouped_requests: dict[str, list[TransactionUpdateRequest]] = defaultdict(list)
     for update in plan.updates:
+        if update.use_single_update:
+            gateway.update_transaction(plan.bindings.plan_id, update.request)
+            continue
         grouped_requests[update.account_alias].append(update.request)
 
     for requests in grouped_requests.values():
         gateway.update_transactions(plan.bindings.plan_id, tuple(requests))
     return len(plan.updates)
+
+
+def _detail_skip_reason(transaction: RemoteTransactionDetail) -> str | None:
+    if transaction.deleted:
+        return "deleted"
+    return None
 
 
 def _select_accounts(

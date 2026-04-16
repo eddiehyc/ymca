@@ -170,6 +170,62 @@ def test_build_prepared_conversion_skips_legacy_marked_transactions() -> None:
     assert prepared.skipped[0].reason == "legacy-marker"
 
 
+def test_build_prepared_conversion_bootstrap_since_overrides_saved_server_knowledge() -> None:
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(alias="travel_hkd", name="Travel HKD", currency="HKD", enabled=True),
+        ),
+        fx_rates={"HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True)},
+    )
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"travel_hkd": "acct-1"},
+                server_knowledge=117506,
+            )
+        },
+    )
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(),
+                    server_knowledge=44,
+                )
+            ]
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2025, 1, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert prepared.sync_request.used_bootstrap is True
+    assert prepared.sync_request.since_date == date(2025, 1, 1)
+    assert prepared.sync_request.last_knowledge_of_server is None
+    assert gateway.list_transactions_by_account_calls == [
+        ("plan-1", "acct-1", date(2025, 1, 1), None),
+    ]
+
+
 def test_execute_conversion_saves_follow_up_server_knowledge() -> None:
     plan = PlanConfig(
         alias="personal",
@@ -335,7 +391,7 @@ def test_execute_conversion_batches_writes_per_account() -> None:
     assert outcome.saved_server_knowledge == 61
 
 
-def test_build_prepared_conversion_processes_transfer_once_with_explicit_sign() -> None:
+def test_build_prepared_conversion_processes_transfer_once_with_plus_minus_prefix() -> None:
     plan = PlanConfig(
         alias="personal",
         name="Example Plan",
@@ -421,10 +477,78 @@ def test_build_prepared_conversion_processes_transfer_once_with_explicit_sign() 
     assert len(prepared.updates) == 1
     assert prepared.updates[0].transaction_id == "txn-out"
     assert prepared.updates[0].is_transfer is True
-    assert prepared.updates[0].new_memo == "Move money | [FX] -12.34 HKD (rate: 7.8 HKD/USD)"
+    assert prepared.updates[0].new_memo == "Move money | [FX] +/-12.34 HKD (rate: 7.8 HKD/USD)"
     assert len(prepared.skipped) == 1
     assert prepared.skipped[0].transaction_id == "txn-in"
     assert prepared.skipped[0].reason == "paired-transfer"
+
+
+def test_build_prepared_conversion_keeps_zero_amount_transactions() -> None:
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(alias="travel_hkd", name="Travel HKD", currency="HKD", enabled=True),
+        ),
+        fx_rates={"HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True)},
+    )
+    state = AppState(version=1, plans={})
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={
+            "txn-1": RemoteTransactionDetail(
+                id="txn-1",
+                date=date(2026, 4, 10),
+                amount_milliunits=0,
+                memo="Adjustment",
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=0,
+            )
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-1",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=0,
+                            memo="Adjustment",
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=44,
+                )
+            ]
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert len(prepared.updates) == 1
+    assert prepared.updates[0].converted_amount_milliunits == 0
+    assert prepared.updates[0].new_memo == "Adjustment | [FX] 0 HKD (rate: 7.8 HKD/USD)"
+    assert prepared.skipped == ()
 
 
 def _prepared_update(

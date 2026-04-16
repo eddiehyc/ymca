@@ -45,14 +45,6 @@ class YnabGateway(Protocol):
         last_knowledge_of_server: int | None = None,
     ) -> TransactionSnapshot: ...
 
-    def list_transactions(
-        self,
-        plan_id: str,
-        *,
-        since_date: date | None = None,
-        last_knowledge_of_server: int | None = None,
-    ) -> TransactionSnapshot: ...
-
     def get_transaction_detail(
         self, plan_id: str, transaction_id: str
     ) -> RemoteTransactionDetail: ...
@@ -245,6 +237,13 @@ def _build_sync_request(
     bootstrap_since: date | None,
     prompt_for_start_date: Callable[[], date],
 ) -> SyncRequest:
+    if bootstrap_since is not None:
+        return SyncRequest(
+            last_knowledge_of_server=None,
+            since_date=bootstrap_since,
+            used_bootstrap=True,
+        )
+
     if plan_state is not None and plan_state.server_knowledge is not None:
         return SyncRequest(
             last_knowledge_of_server=plan_state.server_knowledge,
@@ -276,8 +275,6 @@ def _detail_skip_reason(transaction: RemoteTransactionDetail) -> str | None:
         return summary_skip_reason
     if transaction.subtransaction_count > 0:
         return "split"
-    if transaction.amount_milliunits == 0:
-        return "zero-amount"
     return None
 
 
@@ -302,7 +299,7 @@ def _prepare_update(
         source_currency=account.currency,
         rate_text=fx_rule.rate_text,
         pair_label=pair_label,
-        always_show_sign=is_transfer,
+        transfer_prefix=is_transfer,
     )
     new_memo = append_fx_marker(transaction.memo, marker)
     request = TransactionUpdateRequest(

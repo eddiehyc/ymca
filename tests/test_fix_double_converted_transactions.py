@@ -96,6 +96,7 @@ fx_rates:
     assert gateway.updates[0].memo == "[FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)"
     assert "Prepared fixes: 1" in captured.out
     assert "Writes applied: 1" in captured.out
+    assert "deprecated" in captured.err.lower()
 
 
 def test_fix_double_converted_transactions_script_repairs_large_negative_amount_with_rounding_drift(

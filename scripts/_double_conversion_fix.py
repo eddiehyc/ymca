@@ -3,15 +3,15 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from .conversion import YnabGateway, resolve_bindings
-from .errors import ConfigError, UserInputError
-from .memo import FX_MARKER_RE, LEGACY_FX_MARKER_RE, amount_text_to_milliunits, has_fx_marker
-from .models import (
+from ymca.conversion import YnabGateway, resolve_bindings
+from ymca.errors import ConfigError, UserInputError
+from ymca.memo import FX_MARKER_RE, LEGACY_FX_MARKER_RE, amount_text_to_milliunits, has_fx_marker
+from ymca.models import (
     AccountConfig,
-    DoubleConversionFixPlan,
-    DoubleConversionFixUpdate,
     FxRule,
     PlanConfig,
     RemoteTransaction,
@@ -23,6 +23,26 @@ from .models import (
 _SEPARATOR_PATTERN = r"(?:\||·)"
 _WHOLE_MILLIUNIT = Decimal("1")
 _ROUNDING_TOLERANCE_MILLIUNITS = 5
+
+
+@dataclass(frozen=True, slots=True)
+class DoubleConversionFixUpdate:
+    transaction_id: str
+    date: date
+    account_alias: str
+    old_amount_milliunits: int
+    new_amount_milliunits: int
+    old_memo: str
+    new_memo: str
+    request: TransactionUpdateRequest
+
+
+@dataclass(frozen=True, slots=True)
+class DoubleConversionFixPlan:
+    bindings: ResolvedBindings
+    scanned_transactions: int
+    updates: tuple[DoubleConversionFixUpdate, ...]
+    skipped: tuple[SkippedTransaction, ...]
 
 
 def build_double_conversion_fix_plan(

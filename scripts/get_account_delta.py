@@ -4,7 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from ymca.account_delta import build_account_delta_report
+from scripts._account_delta import build_account_delta_report
+from scripts._deprecation import print_deprecation_warning
 from ymca.config import load_config
 from ymca.errors import YmcaError
 from ymca.memo import format_milliunits
@@ -16,6 +17,7 @@ from ymca.ynab_client import YnabClient
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    print_deprecation_warning("get_account_delta.py")
 
     try:
         config = load_config(args.config)

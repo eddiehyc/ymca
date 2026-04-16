@@ -35,16 +35,16 @@ def test_append_fx_marker_preserves_existing_memo() -> None:
     assert memo == "Dinner | [FX] -12.34 HKD (rate: 7.8 HKD/USD)"
 
 
-def test_build_fx_marker_for_transfer_forces_explicit_plus_sign() -> None:
+def test_build_fx_marker_for_transfer_uses_literal_plus_minus_prefix() -> None:
     marker = build_fx_marker(
         source_amount_milliunits=12340,
         source_currency="HKD",
         rate_text="7.8",
         pair_label="HKD/USD",
-        always_show_sign=True,
+        transfer_prefix=True,
     )
 
-    assert marker == "[FX] +12.34 HKD (rate: 7.8 HKD/USD)"
+    assert marker == "[FX] +/-12.34 HKD (rate: 7.8 HKD/USD)"
 
 
 def test_build_fx_marker_uses_thousands_delimiter() -> None:
@@ -53,11 +53,33 @@ def test_build_fx_marker_uses_thousands_delimiter() -> None:
         source_currency="HKD",
         rate_text="0.12821",
         pair_label="HKD/USD",
-        always_show_sign=True,
+        transfer_prefix=True,
     )
 
-    assert marker == "[FX] -45,586.69 HKD (rate: 0.12821 HKD/USD)"
+    assert marker == "[FX] +/-45,586.69 HKD (rate: 0.12821 HKD/USD)"
     assert has_fx_marker(marker) is True
+
+
+def test_build_fx_marker_trims_trailing_zero_after_decimal() -> None:
+    marker = build_fx_marker(
+        source_amount_milliunits=1234500,
+        source_currency="HKD",
+        rate_text="7.8",
+        pair_label="HKD/USD",
+    )
+
+    assert marker == "[FX] 1,234.5 HKD (rate: 7.8 HKD/USD)"
+
+
+def test_build_fx_marker_drops_decimal_for_round_amount() -> None:
+    marker = build_fx_marker(
+        source_amount_milliunits=1234000,
+        source_currency="HKD",
+        rate_text="7.8",
+        pair_label="HKD/USD",
+    )
+
+    assert marker == "[FX] 1,234 HKD (rate: 7.8 HKD/USD)"
 
 
 def test_replace_legacy_fx_marker_rewrites_old_format() -> None:

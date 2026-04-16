@@ -86,7 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument(
         "--bootstrap-since",
         type=_parse_date_argument,
-        help="Initial sync date to use when no saved server knowledge exists yet.",
+        help="Sync from this date and ignore saved server knowledge for the current run.",
     )
 
     return parser
@@ -139,7 +139,7 @@ def _handle_discover() -> int:
             print("  Accounts: none returned")
             continue
         for account in plan.accounts:
-            if account.deleted:
+            if account.deleted or account.closed:
                 continue
             print(f"  - {account.name}")
     return 0

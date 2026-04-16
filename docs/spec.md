@@ -2,7 +2,7 @@
 
 ## Summary
 
-`ymca` is a typed Python CLI that converts foreign-currency YNAB transactions into the plan base currency and updates those transactions in place. It uses YNAB delta sync through `last_knowledge_of_server` and stores local sync state outside the repo.
+`ymca` is a typed Python CLI that converts foreign-currency YNAB transactions into the plan base currency and updates those transactions in place. It uses YNAB delta sync via `last_knowledge_of_server` and stores local sync state outside the repo.
 
 ## Goals
 
@@ -11,16 +11,16 @@
 - Use local YAML config and local YAML state.
 - Preserve milliunit precision when uploading converted amounts.
 - Append a deterministic FX memo marker for idempotency.
-- Keep the conversion logic reusable for a later web app.
+- Keep the core conversion logic reusable for a future web app.
 
 ## Non-Goals
 
 - Automatic FX-rate fetching
 - Date-based FX-rate history
-- Split-transaction conversion
+- Split-transaction conversion in the main CLI
 - Web UI or phone-specific frontend work in v1
 
-## CLI
+## Supported CLI
 
 ### `ymca config init [--path PATH] [--force]`
 
@@ -41,11 +41,16 @@ Lists visible YNAB plan names and account names to help fill config.
 
 - Dry-run by default
 - Uses saved `server_knowledge` when available
+- If `--bootstrap-since` is supplied, it takes precedence for that run and ignores saved `server_knowledge`
 - Prompts for a bootstrap date if no `server_knowledge` exists and no `--bootstrap-since` is supplied
 - Writes updates only when `--apply` is present
 - Saves refreshed `server_knowledge` after successful apply runs
 - Fetches transactions account-by-account and processes linked transfers only once per pair
 - Applies writes in one bulk `update_transactions` call per configured account to reduce YNAB API request volume
+
+## Deprecated One-Off Scripts
+
+These scripts are kept only for compatibility and manual repair work. They are deprecated and are not part of the supported YMCA CLI workflow.
 
 ### `uv run python scripts/migrate_legacy_fx_memos.py [--config PATH] [--account ALIAS]... [--apply]`
 
@@ -54,6 +59,8 @@ Lists visible YNAB plan names and account names to help fill config.
 - Dry-run by default
 - When `--apply` is used, processes configured accounts one at a time so later account fetches see any transfer-side memo changes from earlier writes
 - Uses one bulk `update_transactions` call per account during apply runs to reduce the chance of YNAB rate limiting
+- Fetches transaction detail before preparing a write
+- Uses the single-transaction update endpoint for split parents so the main memo can be rewritten without going through the bulk patch path for that transaction shape
 
 ### `uv run python scripts/get_account_delta.py --last-server-knowledge N [--config PATH] [--account ALIAS]...`
 
@@ -110,10 +117,10 @@ fx_rates:
 
 ### Secrets
 
-- `secrets.api_key_file` is optional.
-- The file should contain only the YNAB API token.
-- Relative paths are resolved relative to the config file directory.
-- `YNAB_API_KEY` still takes precedence if it is set.
+- `secrets.api_key_file` is optional
+- The file should contain only the YNAB API token
+- Relative paths are resolved relative to the config file directory
+- `YNAB_API_KEY` still takes precedence if it is set
 
 ## Local State Schema
 
@@ -133,23 +140,23 @@ This file is local-only and must not be committed.
 
 ## Conversion Rules
 
-- The source transaction amount comes from YNAB milliunits.
-- Conversion is done at milliunit precision, not 2-decimal display precision.
+- The source transaction amount comes from YNAB milliunits
+- Conversion is done at milliunit precision, not 2-decimal display precision
 - Example:
   - YNAB amount `12340` means `12.34`
   - With `HKD/USD 7.8`, upload `12340 / 7.8 = 1582.05...`, rounded to `1582`
-- Transfers are converted too.
-- Linked transfer pairs are fetched account-by-account and only one side is updated during conversion to avoid double-applying the amount change.
-- When a transaction is a transfer, the memo marker always shows an explicit sign, for example `[FX] +12.34 HKD (rate: 7.8 HKD/USD)`.
+- Transfers are converted too
+- Linked transfer pairs are fetched account-by-account and only one side is updated during conversion to avoid double-applying the amount change
 - Skip:
   - deleted transactions
   - split transactions
   - already-converted transactions
-  - zero-amount transactions
+    - this includes both the current `[FX]` format and the legacy `(... FX rate: ...)` format
+- Log skipped transactions with clear reasons
 
 ## Memo Format
 
-The FX marker is appended to the memo:
+The current FX marker is always appended to the memo.
 
 - If memo exists:
   - `Dinner | [FX] -123.23 HKD (rate: 7.8 HKD/USD)`
@@ -158,29 +165,39 @@ The FX marker is appended to the memo:
 
 Rules:
 
-- Source amount in the memo is shown with 2 decimal places
-- Amounts in the memo use thousands separators when applicable, for example `-45,586.69`
-- Transfer memos always show an explicit `+` or `-` sign before the amount
+- Source amount in the memo is rounded to 2 decimal places, then trailing zeros after the decimal point are trimmed when possible
+- Examples:
+  - `1234.56` becomes `1,234.56`
+  - `1234.50` becomes `1,234.5`
+  - `1234.00` becomes `1,234`
+  - `0.00` becomes `0`
+- Amounts in the memo use thousands separators when applicable
+- Non-transfer memos show `-` for negative amounts and no sign for positive or zero amounts
+- Transfer memos always use a literal `+/-` prefix before the magnitude, for example `[FX] +/-12.34 HKD (rate: 7.8 HKD/USD)`
 - Detection is based on the structured `[FX] ... (rate: ...)` marker anywhere in the memo
 
-## Legacy Memo Migration
+## Legacy Memo Format
 
-Old memo text looked like this:
+Old memo text may look like:
 
 - `12.34 HKD (FX rate: 7.8)`
 - `78 HKD (FX rate: 0.12821)`
+- `78.1 HKD (FX rate: 0.12821)`
 - `-45,586.69 HKD (FX rate: 0.12821)`
-- `-/+78 HKD (FX rate: 0.12821) · FPS`
+- `-45,586.69 HKD (FX rate: 0.12821) · FPS`
+- `-/+78 HKD (FX rate: 0.12821)`
+- `+/-78 HKD (FX rate: 0.12821)`
 
-The migration script rewrites that text in place to the current format:
+## Legacy Memo Migration
 
-- `[FX] 12.34 HKD (rate: 7.8 USD/HKD)`
-- `[FX] 78 HKD (rate: 0.12821 USD/HKD)`
-- `[FX] -45,586.69 HKD (rate: 0.12821 USD/HKD)`
-- `FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)`
-- For transfer transactions, `[FX] +12.34 HKD (rate: 7.8 USD/HKD)` or `[FX] -12.34 HKD (rate: 7.8 USD/HKD)`
-- The migration preserves the legacy rate direction, so the appended pair label remains `base/source` to match the numeric rate already stored in the old memo text.
-- The migration normalizes legacy amount text into grouped display format, including inserting thousands separators when needed, while preserving any decimal digits and `-/+` or `+/-` prefixes.
+The deprecated migration script rewrites that text in place to the current `[FX] ... (rate: ...)` structure.
+
+- `12.34 HKD (FX rate: 7.8)` becomes `[FX] 12.34 HKD (rate: 7.8 USD/HKD)`
+- `78 HKD (FX rate: 0.12821)` becomes `[FX] 78 HKD (rate: 0.12821 USD/HKD)`
+- `-45,586.69 HKD (FX rate: 0.12821) · FPS` becomes `FPS | [FX] -45,586.69 HKD (rate: 0.12821 USD/HKD)`
+- The migration preserves the legacy rate direction, so the appended pair label remains `base/source` to match the numeric rate already stored in the old memo text
+- The migration normalizes legacy amount text into grouped display format while preserving any decimal digits and any legacy `-/+` or `+/-` transfer prefixes
+- Split transactions are not converted by the main CLI, but the deprecated migration script can still rewrite a split parent memo by sending a memo-only single-transaction update
 
 ## Double Conversion Repair
 
@@ -189,7 +206,7 @@ Some older runs may have converted already-converted transactions again. A typic
 - Amount: `78.52`
 - Memo: `612.49 HKD (FX rate: 0.12821) · [FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)`
 
-The repair script rewrites that to:
+The deprecated repair script rewrites that to:
 
 - Amount: `612.49`
 - Memo: `[FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)`

@@ -13,8 +13,27 @@ from ymca.models import (
     RemoteAccount,
     RemotePlan,
     RemoteTransaction,
+    RemoteTransactionDetail,
     TransactionSnapshot,
 )
+
+
+def _detail(
+    transaction: RemoteTransaction,
+    *,
+    subtransaction_count: int = 0,
+) -> RemoteTransactionDetail:
+    return RemoteTransactionDetail(
+        id=transaction.id,
+        date=transaction.date,
+        amount_milliunits=transaction.amount_milliunits,
+        memo=transaction.memo,
+        account_id=transaction.account_id,
+        transfer_account_id=transaction.transfer_account_id,
+        transfer_transaction_id=transaction.transfer_transaction_id,
+        deleted=transaction.deleted,
+        subtransaction_count=subtransaction_count,
+    )
 
 
 def test_migrate_legacy_fx_memos_script_updates_old_marker(
@@ -42,6 +61,17 @@ fx_rates:
         encoding="utf-8",
     )
 
+    transaction = RemoteTransaction(
+        id="txn-1",
+        date=date(2026, 4, 10),
+        amount_milliunits=-45586690,
+        memo="Dinner | -45,586.69 HKD (FX rate: 0.12821)",
+        account_id="acct-1",
+        transfer_account_id=None,
+        transfer_transaction_id=None,
+        deleted=False,
+    )
+
     gateway = FakeGateway(
         plans=(RemotePlan(id="plan-1", name="Example Plan"),),
         account_snapshots={
@@ -50,22 +80,11 @@ fx_rates:
                 server_knowledge=1,
             )
         },
-        transaction_details={},
+        transaction_details={"txn-1": _detail(transaction)},
         transaction_snapshots_by_account={
             "acct-1": [
                 TransactionSnapshot(
-                    transactions=(
-                        RemoteTransaction(
-                            id="txn-1",
-                            date=date(2026, 4, 10),
-                            amount_milliunits=-45586690,
-                            memo="Dinner | -45,586.69 HKD (FX rate: 0.12821)",
-                            account_id="acct-1",
-                            transfer_account_id=None,
-                            transfer_transaction_id=None,
-                            deleted=False,
-                        ),
-                    ),
+                    transactions=(transaction,),
                     server_knowledge=1,
                 )
             ]
@@ -92,6 +111,7 @@ fx_rates:
     assert gateway.updates[0].memo == "Dinner | [FX] -45,586.69 HKD (rate: 0.12821 USD/HKD)"
     assert "Prepared memo migrations: 1" in captured.out
     assert "Writes applied: 1" in captured.out
+    assert "deprecated" in captured.err.lower()
 
 
 def test_migrate_legacy_fx_memos_script_moves_prepended_marker_to_end(
@@ -119,6 +139,17 @@ fx_rates:
         encoding="utf-8",
     )
 
+    transaction = RemoteTransaction(
+        id="txn-1",
+        date=date(2026, 4, 10),
+        amount_milliunits=-78000,
+        memo="-/+78 HKD (FX rate: 0.12821) · FPS",
+        account_id="acct-1",
+        transfer_account_id="acct-2",
+        transfer_transaction_id="txn-2",
+        deleted=False,
+    )
+
     gateway = FakeGateway(
         plans=(RemotePlan(id="plan-1", name="Example Plan"),),
         account_snapshots={
@@ -127,22 +158,11 @@ fx_rates:
                 server_knowledge=1,
             )
         },
-        transaction_details={},
+        transaction_details={"txn-1": _detail(transaction)},
         transaction_snapshots_by_account={
             "acct-1": [
                 TransactionSnapshot(
-                    transactions=(
-                        RemoteTransaction(
-                            id="txn-1",
-                            date=date(2026, 4, 10),
-                            amount_milliunits=-78000,
-                            memo="-/+78 HKD (FX rate: 0.12821) · FPS",
-                            account_id="acct-1",
-                            transfer_account_id="acct-2",
-                            transfer_transaction_id="txn-2",
-                            deleted=False,
-                        ),
-                    ),
+                    transactions=(transaction,),
                     server_knowledge=1,
                 )
             ]
@@ -195,6 +215,17 @@ fx_rates:
         encoding="utf-8",
     )
 
+    transaction = RemoteTransaction(
+        id="txn-1",
+        date=date(2026, 4, 10),
+        amount_milliunits=-7500000,
+        memo="-7500 HKD (FX rate: 0.12821)",
+        account_id="acct-1",
+        transfer_account_id=None,
+        transfer_transaction_id=None,
+        deleted=False,
+    )
+
     gateway = FakeGateway(
         plans=(RemotePlan(id="plan-1", name="Example Plan"),),
         account_snapshots={
@@ -203,22 +234,11 @@ fx_rates:
                 server_knowledge=1,
             )
         },
-        transaction_details={},
+        transaction_details={"txn-1": _detail(transaction)},
         transaction_snapshots_by_account={
             "acct-1": [
                 TransactionSnapshot(
-                    transactions=(
-                        RemoteTransaction(
-                            id="txn-1",
-                            date=date(2026, 4, 10),
-                            amount_milliunits=-7500000,
-                            memo="-7500 HKD (FX rate: 0.12821)",
-                            account_id="acct-1",
-                            transfer_account_id=None,
-                            transfer_transaction_id=None,
-                            deleted=False,
-                        ),
-                    ),
+                    transactions=(transaction,),
                     server_knowledge=1,
                 )
             ]
@@ -271,6 +291,27 @@ fx_rates:
         encoding="utf-8",
     )
 
+    first_transaction = RemoteTransaction(
+        id="txn-1",
+        date=date(2026, 4, 10),
+        amount_milliunits=-100000,
+        memo="-100 HKD (FX rate: 0.12821)",
+        account_id="acct-1",
+        transfer_account_id=None,
+        transfer_transaction_id=None,
+        deleted=False,
+    )
+    second_transaction = RemoteTransaction(
+        id="txn-2",
+        date=date(2026, 4, 11),
+        amount_milliunits=-200000,
+        memo="-200 HKD (FX rate: 0.12821)",
+        account_id="acct-1",
+        transfer_account_id=None,
+        transfer_transaction_id=None,
+        deleted=False,
+    )
+
     gateway = FakeGateway(
         plans=(RemotePlan(id="plan-1", name="Example Plan"),),
         account_snapshots={
@@ -279,32 +320,14 @@ fx_rates:
                 server_knowledge=1,
             )
         },
-        transaction_details={},
+        transaction_details={
+            "txn-1": _detail(first_transaction),
+            "txn-2": _detail(second_transaction),
+        },
         transaction_snapshots_by_account={
             "acct-1": [
                 TransactionSnapshot(
-                    transactions=(
-                        RemoteTransaction(
-                            id="txn-1",
-                            date=date(2026, 4, 10),
-                            amount_milliunits=-100000,
-                            memo="-100 HKD (FX rate: 0.12821)",
-                            account_id="acct-1",
-                            transfer_account_id=None,
-                            transfer_transaction_id=None,
-                            deleted=False,
-                        ),
-                        RemoteTransaction(
-                            id="txn-2",
-                            date=date(2026, 4, 11),
-                            amount_milliunits=-200000,
-                            memo="-200 HKD (FX rate: 0.12821)",
-                            account_id="acct-1",
-                            transfer_account_id=None,
-                            transfer_transaction_id=None,
-                            deleted=False,
-                        ),
-                    ),
+                    transactions=(first_transaction, second_transaction),
                     server_knowledge=1,
                 )
             ]
@@ -332,3 +355,79 @@ fx_rates:
     )
     assert "Prepared memo migrations: 2" in captured.out
     assert "Writes applied: 2" in captured.out
+
+
+def test_migrate_legacy_fx_memos_script_updates_split_transfer_with_single_update(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """version: 1
+plan:
+  alias: personal
+  name: Example Plan
+  base_currency: USD
+accounts:
+  travel_hkd:
+    name: Travel HKD
+    currency: HKD
+    enabled: true
+fx_rates:
+  HKD:
+    rate: "7.8"
+    divide_to_base: true
+""",
+        encoding="utf-8",
+    )
+
+    transaction = RemoteTransaction(
+        id="txn-1",
+        date=date(2026, 4, 10),
+        amount_milliunits=-78000,
+        memo="-/+78 HKD (FX rate: 0.12821) · FPS",
+        account_id="acct-1",
+        transfer_account_id="acct-2",
+        transfer_transaction_id="txn-2",
+        deleted=False,
+    )
+
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={"txn-1": _detail(transaction, subtransaction_count=2)},
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(transaction,),
+                    server_knowledge=1,
+                )
+            ]
+        },
+    )
+
+    monkeypatch.setattr(
+        "scripts.migrate_legacy_fx_memos.load_api_key",
+        lambda **_: "secret",
+    )
+    monkeypatch.setattr(
+        "scripts.migrate_legacy_fx_memos.YnabClient",
+        lambda api_key: FakeGatewayContext(gateway),
+    )
+
+    exit_code = migrate_legacy_fx_memos.main(["--config", str(config_path), "--apply"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert len(gateway.updates) == 1
+    assert gateway.update_batches == []
+    assert gateway.updates[0].amount_milliunits is None
+    assert gateway.updates[0].memo == "FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)"
+    assert "Prepared memo migrations: 1" in captured.out
+    assert "Writes applied: 1" in captured.out

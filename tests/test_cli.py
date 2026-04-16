@@ -61,7 +61,6 @@ fx_rates:
             )
         },
         transaction_details={},
-        transaction_snapshots=[],
     )
 
     monkeypatch.setattr(
@@ -168,3 +167,36 @@ fx_rates:
     assert "Writes applied: 1" in captured.out
     saved_state = load_state(state_path)
     assert saved_state.plans["personal"].server_knowledge == 55
+
+
+def test_discover_hides_closed_accounts(
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    gateway = FakeGateway(
+        plans=(
+            RemotePlan(
+                id="plan-1",
+                name="Example Plan",
+                accounts=(
+                    RemoteAccount(id="acct-1", name="Open HKD", deleted=False, closed=False),
+                    RemoteAccount(id="acct-2", name="Closed HKD", deleted=False, closed=True),
+                    RemoteAccount(id="acct-3", name="Deleted HKD", deleted=True, closed=False),
+                ),
+            ),
+        ),
+        account_snapshots={},
+        transaction_details={},
+    )
+
+    monkeypatch.setattr("ymca.cli.load_api_key", lambda **_: "secret")
+    monkeypatch.setattr("ymca.cli.YnabClient", lambda api_key: FakeGatewayContext(gateway))
+
+    exit_code = main(["discover"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Plan: Example Plan" in captured.out
+    assert "Open HKD" in captured.out
+    assert "Closed HKD" not in captured.out
+    assert "Deleted HKD" not in captured.out

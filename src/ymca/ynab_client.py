@@ -62,30 +62,6 @@ class YnabClient:
             server_knowledge=int(response.data.server_knowledge),
         )
 
-    def list_transactions(
-        self,
-        plan_id: str,
-        *,
-        since_date: date | None = None,
-        last_knowledge_of_server: int | None = None,
-    ) -> TransactionSnapshot:
-        transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
-        try:
-            response = transactions_api.get_transactions(
-                plan_id,
-                since_date=since_date,
-                last_knowledge_of_server=last_knowledge_of_server,
-            )
-        except ApiException as exc:
-            raise ApiError(_format_api_exception("list transactions", exc)) from exc
-
-        return TransactionSnapshot(
-            transactions=tuple(
-                self._map_transaction(transaction) for transaction in response.data.transactions
-            ),
-            server_knowledge=int(response.data.server_knowledge),
-        )
-
     def list_transactions_by_account(
         self,
         plan_id: str,
@@ -169,6 +145,7 @@ class YnabClient:
             id=str(raw_account.id),
             name=str(raw_account.name),
             deleted=bool(raw_account.deleted),
+            closed=bool(raw_account.closed),
         )
 
     def _map_transaction(self, raw_transaction: Any) -> RemoteTransaction:
