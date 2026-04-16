@@ -6,7 +6,7 @@ from pathlib import Path
 from _pytest.capture import CaptureFixture
 from pytest import MonkeyPatch
 
-from scripts import get_account_delta
+from deprecated.one_off_scripts import get_account_delta
 from tests.fakes import FakeGateway, FakeGatewayContext
 from ymca.models import (
     AccountSnapshot,
@@ -85,9 +85,12 @@ fx_rates:
         },
     )
 
-    monkeypatch.setattr("scripts.get_account_delta.load_api_key", lambda **_: "secret")
     monkeypatch.setattr(
-        "scripts.get_account_delta.YnabClient",
+        "deprecated.one_off_scripts.get_account_delta.load_api_key",
+        lambda **_: "secret",
+    )
+    monkeypatch.setattr(
+        "deprecated.one_off_scripts.get_account_delta.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 
@@ -162,9 +165,12 @@ fx_rates:
         },
     )
 
-    monkeypatch.setattr("scripts.get_account_delta.load_api_key", lambda **_: "secret")
     monkeypatch.setattr(
-        "scripts.get_account_delta.YnabClient",
+        "deprecated.one_off_scripts.get_account_delta.load_api_key",
+        lambda **_: "secret",
+    )
+    monkeypatch.setattr(
+        "deprecated.one_off_scripts.get_account_delta.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from _pytest.capture import CaptureFixture
 from pytest import MonkeyPatch
 
-from scripts import fix_double_converted_transactions
+from deprecated.one_off_scripts import fix_double_converted_transactions
 from tests.fakes import FakeGateway, FakeGatewayContext
 from ymca.models import (
     AccountSnapshot,
@@ -76,11 +76,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.fix_double_converted_transactions.load_api_key",
+        "deprecated.one_off_scripts.fix_double_converted_transactions.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.fix_double_converted_transactions.YnabClient",
+        "deprecated.one_off_scripts.fix_double_converted_transactions.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 
@@ -158,11 +158,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.fix_double_converted_transactions.load_api_key",
+        "deprecated.one_off_scripts.fix_double_converted_transactions.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.fix_double_converted_transactions.YnabClient",
+        "deprecated.one_off_scripts.fix_double_converted_transactions.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 
@@ -238,11 +238,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.fix_double_converted_transactions.load_api_key",
+        "deprecated.one_off_scripts.fix_double_converted_transactions.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.fix_double_converted_transactions.YnabClient",
+        "deprecated.one_off_scripts.fix_double_converted_transactions.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 

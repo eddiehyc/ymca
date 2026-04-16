@@ -1,88 +1,106 @@
-# YMCA v1 Spec
+# YMCA Specification
 
-## Summary
+## 1. Overview
 
-`ymca` is a typed Python CLI that converts foreign-currency YNAB transactions into the plan base currency and updates those transactions in place. It uses YNAB delta sync via `last_knowledge_of_server` and stores local sync state outside the repo.
+`ymca` is a typed Python CLI for converting foreign-currency YNAB transactions into a configured base currency and updating those transactions in place.
 
-## Goals
+The product is intentionally local-first:
+
+- secrets stay out of tracked source
+- YNAB UUIDs stay out of tracked config
+- sync state is stored locally
+- the core conversion engine is separate from the CLI
+
+## 2. Scope
+
+### 2.1 Goals
 
 - Use the official YNAB Python SDK.
-- Keep secrets and identifying UUIDs out of tracked source.
-- Use local YAML config and local YAML state.
-- Preserve milliunit precision when uploading converted amounts.
+- Use `uv` for project management.
+- Keep the codebase strongly typed.
+- Keep config human-edited and identifier-free.
+- Persist YNAB delta sync state locally.
+- Preserve milliunit precision when converting and uploading amounts.
 - Append a deterministic FX memo marker for idempotency.
-- Keep the core conversion logic reusable for a future web app.
+- Keep the conversion engine reusable for a later web application.
 
-## Non-Goals
+### 2.2 Non-Goals
 
 - Automatic FX-rate fetching
-- Date-based FX-rate history
+- Historical FX rates
 - Split-transaction conversion in the main CLI
-- Web UI or phone-specific frontend work in v1
+- A web UI in v1
 
-## Supported CLI
+## 3. Supported CLI Surface
 
-### `ymca config init [--path PATH] [--force]`
+### 3.1 `ymca config init [--path PATH] [--force]`
 
-Creates a placeholder config file without secrets or UUIDs.
+Creates a placeholder config file with no secrets and no YNAB IDs.
 
-### `ymca config check [--path PATH]`
+### 3.2 `ymca config check [--path PATH]`
 
-- Validates YAML schema
-- Confirms an API key is available
-- Verifies YNAB auth
-- Confirms configured plan and account names resolve
+Performs an online validation pass:
 
-### `ymca discover`
+- validates config schema
+- confirms an API key is available
+- verifies YNAB authentication
+- resolves the configured budget name
+- resolves configured account names
 
-Lists visible YNAB plan names and account names to help fill config.
+### 3.3 `ymca discover`
 
-### `ymca convert [--account ALIAS]... [--apply] [--bootstrap-since YYYY-MM-DD]`
+Lists visible YNAB budgets and open accounts to help the user fill in the config file.
 
-- Dry-run by default
-- Uses saved `server_knowledge` when available
-- If `--bootstrap-since` is supplied, it takes precedence for that run and ignores saved `server_knowledge`
-- Prompts for a bootstrap date if no `server_knowledge` exists and no `--bootstrap-since` is supplied
-- Writes updates only when `--apply` is present
-- Saves refreshed `server_knowledge` after successful apply runs
-- Fetches transactions account-by-account and processes linked transfers only once per pair
-- Applies writes in one bulk `update_transactions` call per configured account to reduce YNAB API request volume
+Closed and deleted accounts are not shown.
 
-## Deprecated One-Off Scripts
+### 3.4 `ymca convert [--account ALIAS]... [--apply] [--bootstrap-since YYYY-MM-DD]`
 
-These scripts are kept only for compatibility and manual repair work. They are deprecated and are not part of the supported YMCA CLI workflow.
+- dry-run by default
+- writes only when `--apply` is present
+- uses saved `server_knowledge` when available
+- if `--bootstrap-since` is supplied, it takes precedence for that run and ignores saved `server_knowledge`
+- prompts for a bootstrap date if no local `server_knowledge` exists and no bootstrap date is supplied
+- saves refreshed `server_knowledge` after successful apply runs
 
-### `uv run python scripts/migrate_legacy_fx_memos.py [--config PATH] [--account ALIAS]... [--apply]`
+## 4. Runtime Path Resolution
 
-- One-time helper for rewriting legacy memo text in existing transactions
-- Reads the same YMCA YAML config and secret sources as the CLI
-- Dry-run by default
-- When `--apply` is used, processes configured accounts one at a time so later account fetches see any transfer-side memo changes from earlier writes
-- Uses one bulk `update_transactions` call per account during apply runs to reduce the chance of YNAB rate limiting
-- Fetches transaction detail before preparing a write
-- Uses the single-transaction update endpoint for split parents so the main memo can be rewritten without going through the bulk patch path for that transaction shape
+Path handling is intentionally split between config-management commands and runtime commands.
 
-### `uv run python scripts/get_account_delta.py --last-server-knowledge N [--config PATH] [--account ALIAS]...`
+### 4.1 Config-Management Commands
 
-- Read-only helper for debugging YNAB delta sync behavior
-- Reads the same YMCA YAML config and secret sources as the CLI
-- Resolves configured account aliases from the config file
-- Calls YNAB `get_transactions_by_account` for each selected account with the supplied `last_knowledge_of_server`
-- Prints changed transactions per account, plus the requested and returned server knowledge values
+`ymca config init --path ...` and `ymca config check --path ...` operate on the explicit path supplied by the user.
 
-### `uv run python scripts/fix_double_converted_transactions.py [--config PATH] [--account ALIAS]... [--apply]`
+They do not change the runtime config path used by later `discover` or `convert` commands.
 
-- One-time helper for repairing transactions that were converted twice by older tooling
-- Looks for transactions that contain both a legacy FX marker and a current `[FX]` marker
-- Fixes only transactions whose current amount exactly matches converting the legacy amount one more time
-- Allows a small milliunit tolerance when matching these records so older cent-rounded double conversions are still repairable
-- Restores the once-converted amount, removes the legacy marker from the memo, and keeps the current `[FX]` marker
-- Dry-run by default
-- Uses one bulk `update_transactions` call per account during apply runs
+### 4.2 Runtime Commands
 
-## Config Schema
+`ymca discover` and `ymca convert` resolve the config path in this order:
 
-Default path: `~/.config/ymca/config.yaml`
+1. `YMCA_CONFIG_PATH`
+2. `~/.config/ymca/config.yaml`
+
+They resolve the state path in this order:
+
+1. `YMCA_STATE_PATH`
+2. `~/.local/state/ymca/state.yaml`
+
+API key resolution order:
+
+1. `YNAB_API_KEY`
+2. `secrets.api_key_file`
+3. interactive prompt
+
+## 5. Local Files
+
+### 5.1 Config File
+
+Default path:
+
+```text
+~/.config/ymca/config.yaml
+```
+
+Example:
 
 ```yaml
 version: 1
@@ -91,7 +109,7 @@ secrets:
 
 plan:
   alias: personal
-  name: Example YNAB Plan Name
+  name: Example YNAB Budget Name
   base_currency: USD
 
 accounts:
@@ -106,25 +124,38 @@ fx_rates:
     divide_to_base: true
 ```
 
-### FX Rule Semantics
+In the config schema, `plan` refers to the YNAB budget.
 
-- `rate` must always be greater than `1`
+Validation rules:
+
+- `version` must be `1`
+- `plan.alias`, `plan.name`, and account aliases must be non-empty strings
+- `plan.name` must exactly match the YNAB budget name
+- Each configured account `name` must exactly match the YNAB account name
+- `plan.base_currency` and account `currency` values must be 3-letter uppercase currency codes
+- at least one account must be configured
+- at least one account must be enabled
+- enabled accounts must not use the base currency
+- every enabled account currency must have an `fx_rates` entry
+- every FX `rate` must be greater than `1`
+- `divide_to_base` must be a boolean
+
+FX semantics:
+
 - `divide_to_base: true` means `base = source / rate`
 - `divide_to_base: false` means `base = source * rate`
-- Example:
-  - If base is `USD` and source is `HKD`, store `7.8` with `divide_to_base: true`
-  - If base is `USD` and source is `GBP`, store `1.35` with `divide_to_base: false`
+- if base is `USD` and source is `HKD`, store `7.8` with `divide_to_base: true`
+- if base is `USD` and source is `GBP`, store `1.35` with `divide_to_base: false`
 
-### Secrets
+### 5.2 State File
 
-- `secrets.api_key_file` is optional
-- The file should contain only the YNAB API token
-- Relative paths are resolved relative to the config file directory
-- `YNAB_API_KEY` still takes precedence if it is set
+Default path:
 
-## Local State Schema
+```text
+~/.local/state/ymca/state.yaml
+```
 
-Default path: `~/.local/state/ymca/state.yaml`
+Example:
 
 ```yaml
 version: 1
@@ -136,90 +167,163 @@ plans:
     server_knowledge: 42
 ```
 
-This file is local-only and must not be committed.
+The state file is local-only and must not be committed.
 
-## Conversion Rules
+It stores:
 
-- The source transaction amount comes from YNAB milliunits
-- Conversion is done at milliunit precision, not 2-decimal display precision
-- Example:
-  - YNAB amount `12340` means `12.34`
-  - With `HKD/USD 7.8`, upload `12340 / 7.8 = 1582.05...`, rounded to `1582`
-- Transfers are converted too
-- Linked transfer pairs are fetched account-by-account and only one side is updated during conversion to avoid double-applying the amount change
-- Skip:
-  - deleted transactions
-  - split transactions
-  - already-converted transactions
-    - this includes both the current `[FX]` format and the legacy `(... FX rate: ...)` format
-- Log skipped transactions with clear reasons
+- resolved YNAB budget IDs
+- resolved YNAB account IDs
+- `server_knowledge` per configured plan alias from the config file
 
-## Memo Format
+## 6. Sync Model
 
-The current FX marker is always appended to the memo.
+- YNAB delta sync is the default model.
+- Normal runs call YNAB with `last_knowledge_of_server` when saved state exists.
+- First-time runs use a bootstrap date supplied through `--bootstrap-since` or an interactive prompt.
+- Dry runs do not persist state.
+- Successful apply runs persist refreshed `server_knowledge`.
+- If writes were performed, YMCA performs a follow-up delta fetch and saves the post-write `server_knowledge`.
 
-- If memo exists:
-  - `Dinner | [FX] -123.23 HKD (rate: 7.8 HKD/USD)`
-- If memo is empty:
-  - `[FX] -123.23 HKD (rate: 7.8 HKD/USD)`
+## 7. Conversion Semantics
 
-Rules:
+### 7.1 Selection Rules
 
-- Source amount in the memo is rounded to 2 decimal places, then trailing zeros after the decimal point are trimmed when possible
-- Examples:
-  - `1234.56` becomes `1,234.56`
-  - `1234.50` becomes `1,234.5`
-  - `1234.00` becomes `1,234`
-  - `0.00` becomes `0`
-- Amounts in the memo use thousands separators when applicable
-- Non-transfer memos show `-` for negative amounts and no sign for positive or zero amounts
-- Transfer memos always use a literal `+/-` prefix before the magnitude, for example `[FX] +/-12.34 HKD (rate: 7.8 HKD/USD)`
-- Detection is based on the structured `[FX] ... (rate: ...)` marker anywhere in the memo
+- process enabled configured accounts only
+- fetch transactions account-by-account
+- process linked transfers only once per pair
 
-## Legacy Memo Format
+### 7.2 Skip Rules
 
-Old memo text may look like:
+The main CLI skips:
+
+- deleted transactions
+- split transactions
+- transactions already containing the current `[FX]` marker
+- transactions containing the legacy `(... FX rate: ...)` marker
+
+### 7.3 Amount Precision
+
+- YNAB amounts are treated as milliunits
+- conversion uses `Decimal`
+- uploads are rounded to the nearest milliunit
+
+Example:
+
+- YNAB amount `12340` means `12.34`
+- with `7.8 HKD/USD`, YMCA uploads `1582`
+- it does not round to `1580`
+
+### 7.4 Transfer Handling
+
+- transfer transactions are converted
+- transfer memo amounts use a literal `+/-` prefix
+- account-by-account fetching prevents both sides of a transfer pair from being converted twice in the same run
+
+## 8. Memo Format
+
+The current FX marker is appended to the end of the memo.
+
+Examples:
+
+- `Dinner | [FX] -123.45 HKD (rate: 7.8 HKD/USD)`
+- `[FX] 500 HKD (rate: 0.12821 USD/HKD)`
+- `[FX] +/-78 HKD (rate: 0.12821 USD/HKD)`
+
+Formatting rules:
+
+- source amounts are rounded to 2 decimal places for memo display
+- trailing zeros after the decimal point are trimmed when possible
+- thousands separators are used when applicable
+- non-transfer positives show no sign
+- non-transfer negatives show `-`
+- transfers show a literal `+/-`
+
+Detection rule:
+
+- any memo containing the structured `[FX] ... (rate: ...)` marker is treated as already converted
+
+## 9. Legacy Memo Compatibility
+
+Legacy memo text may look like:
 
 - `12.34 HKD (FX rate: 7.8)`
 - `78 HKD (FX rate: 0.12821)`
-- `78.1 HKD (FX rate: 0.12821)`
 - `-45,586.69 HKD (FX rate: 0.12821)`
 - `-45,586.69 HKD (FX rate: 0.12821) · FPS`
 - `-/+78 HKD (FX rate: 0.12821)`
 - `+/-78 HKD (FX rate: 0.12821)`
 
-## Legacy Memo Migration
+The main CLI does not migrate this format. It skips those transactions so current conversion logic stays simple and idempotent.
 
-The deprecated migration script rewrites that text in place to the current `[FX] ... (rate: ...)` structure.
+## 10. Deprecated One-Off Helpers
+
+Deprecated helpers are retained only for manual migration, repair, and debugging work.
+
+Preferred path:
+
+- `deprecated/one_off_scripts/migrate_legacy_fx_memos.py`
+- `deprecated/one_off_scripts/get_account_delta.py`
+- `deprecated/one_off_scripts/fix_double_converted_transactions.py`
+
+Compatibility note:
+
+- these helpers are not part of the supported `ymca` CLI surface
+- their logic should remain confined to the deprecated helper area rather than complicating the main CLI
+
+### 10.1 Legacy Memo Migration
+
+The migration helper rewrites legacy memo text into the current `[FX]` structure.
+
+Examples:
 
 - `12.34 HKD (FX rate: 7.8)` becomes `[FX] 12.34 HKD (rate: 7.8 USD/HKD)`
-- `78 HKD (FX rate: 0.12821)` becomes `[FX] 78 HKD (rate: 0.12821 USD/HKD)`
 - `-45,586.69 HKD (FX rate: 0.12821) · FPS` becomes `FPS | [FX] -45,586.69 HKD (rate: 0.12821 USD/HKD)`
-- The migration preserves the legacy rate direction, so the appended pair label remains `base/source` to match the numeric rate already stored in the old memo text
-- The migration normalizes legacy amount text into grouped display format while preserving any decimal digits and any legacy `-/+` or `+/-` transfer prefixes
-- Split transactions are not converted by the main CLI, but the deprecated migration script can still rewrite a split parent memo by sending a memo-only single-transaction update
 
-## Double Conversion Repair
+Behavior:
 
-Some older runs may have converted already-converted transactions again. A typical broken record looks like:
+- dry-run by default
+- uses one bulk `update_transactions` call per account during apply runs where possible
+- fetches transaction detail before preparing writes
+- can rewrite split parent memos through the single-transaction update path
+- preserves the legacy rate direction already encoded in the old memo
 
-- Amount: `78.52`
-- Memo: `612.49 HKD (FX rate: 0.12821) · [FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)`
+### 10.2 Account Delta Inspection
 
-The deprecated repair script rewrites that to:
+The account delta helper:
 
-- Amount: `612.49`
-- Memo: `[FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)`
+- reads configured account aliases from the config file
+- fetches `get_transactions_by_account` per account using a supplied `last_knowledge_of_server`
+- prints changed transactions per account
+- prints requested and returned server knowledge values
 
-The main converter also skips transactions with legacy FX markers so this older failure mode is not reintroduced by current runs.
+### 10.3 Double Conversion Repair
 
-## Checks
+The repair helper targets transactions previously converted twice by older tooling.
+
+Example broken record:
+
+- amount: `78.52`
+- memo: `612.49 HKD (FX rate: 0.12821) · [FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)`
+
+Repaired result:
+
+- amount: `612.49`
+- memo: `[FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)`
+
+Behavior:
+
+- dry-run by default
+- fixes only transactions whose amount pattern matches a double conversion
+- allows a small milliunit tolerance for older cent-rounded data
+- uses one bulk `update_transactions` call per account during apply runs
+
+## 11. Quality Gates
 
 Canonical local check flow:
 
 ```bash
 uv sync --dev
 uv run ruff check .
-uv run mypy src tests
+uv run mypy src tests deprecated
 uv run pytest
 ```

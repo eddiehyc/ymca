@@ -6,7 +6,7 @@ from pathlib import Path
 from _pytest.capture import CaptureFixture
 from pytest import MonkeyPatch
 
-from scripts import migrate_legacy_fx_memos
+from deprecated.one_off_scripts import migrate_legacy_fx_memos
 from tests.fakes import FakeGateway, FakeGatewayContext
 from ymca.models import (
     AccountSnapshot,
@@ -92,11 +92,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.load_api_key",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.YnabClient",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 
@@ -170,11 +170,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.load_api_key",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.YnabClient",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 
@@ -246,11 +246,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.load_api_key",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.YnabClient",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 
@@ -335,11 +335,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.load_api_key",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.YnabClient",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 
@@ -413,11 +413,11 @@ fx_rates:
     )
 
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.load_api_key",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.load_api_key",
         lambda **_: "secret",
     )
     monkeypatch.setattr(
-        "scripts.migrate_legacy_fx_memos.YnabClient",
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos.YnabClient",
         lambda api_key: FakeGatewayContext(gateway),
     )
 

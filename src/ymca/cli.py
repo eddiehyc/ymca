@@ -47,14 +47,31 @@ def _dispatch(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ymca", description="YNAB FX conversion CLI.")
+    parser = argparse.ArgumentParser(
+        prog="ymca",
+        description=(
+            "YNAB FX conversion CLI. Runtime commands read YMCA_CONFIG_PATH and "
+            "YMCA_STATE_PATH when set."
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     config_parser = subparsers.add_parser("config", help="Manage local YMCA config.")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
 
-    config_init_parser = config_subparsers.add_parser("init", help="Create a sample config file.")
-    config_init_parser.add_argument("--path", type=Path, default=default_config_path())
+    config_init_parser = config_subparsers.add_parser(
+        "init",
+        help="Create a sample config file.",
+    )
+    config_init_parser.add_argument(
+        "--path",
+        type=Path,
+        default=default_config_path(),
+        help=(
+            "Write the template to this path. This does not change the runtime path used by "
+            "discover or convert."
+        ),
+    )
     config_init_parser.add_argument(
         "--force",
         action="store_true",
@@ -63,11 +80,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     config_check_parser = config_subparsers.add_parser(
         "check",
-        help="Validate config and secret access.",
+        help="Validate a config file and secret access.",
     )
-    config_check_parser.add_argument("--path", type=Path, default=default_config_path())
+    config_check_parser.add_argument(
+        "--path",
+        type=Path,
+        default=default_config_path(),
+        help=(
+            "Validate this config file. This does not change the runtime path used by "
+            "discover or convert."
+        ),
+    )
 
-    subparsers.add_parser("discover", help="List visible YNAB plans and account names.")
+    subparsers.add_parser(
+        "discover",
+        help="List visible YNAB plans and open account names from the runtime config path.",
+    )
 
     convert_parser = subparsers.add_parser("convert", help="Convert matching YNAB transactions.")
     convert_parser.add_argument(
@@ -95,6 +123,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def _handle_config_init(*, path: Path, force: bool) -> int:
     write_config_template(path, force=force)
     print(f"Wrote config template to {path}")
+    if path != default_config_path():
+        print(
+            "Note: discover and convert still use YMCA_CONFIG_PATH or the default config path "
+            "unless you set YMCA_CONFIG_PATH."
+        )
     return 0
 
 
@@ -115,6 +148,12 @@ def _handle_config_check(*, path: Path) -> int:
         resolved_id = bindings.account_ids.get(account.alias)
         status = "OK" if resolved_id is not None else "MISSING"
         print(f"Account {account.alias}: {status} ({account.name})")
+
+    if path != default_config_path():
+        print(
+            "Note: discover and convert still use YMCA_CONFIG_PATH or the default config path "
+            "unless you set YMCA_CONFIG_PATH."
+        )
 
     return 0
 

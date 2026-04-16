@@ -1,11 +1,20 @@
+# ruff: noqa: E402
 from __future__ import annotations
+
+if __package__ in {None, ""}:
+    import sys
+    from pathlib import Path
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
 
 import argparse
 import sys
 from pathlib import Path
 
-from scripts._account_delta import build_account_delta_report
-from scripts._deprecation import print_deprecation_warning
+from deprecated.one_off_scripts._account_delta import build_account_delta_report
+from deprecated.one_off_scripts._deprecation import print_deprecation_warning
 from ymca.config import load_config
 from ymca.errors import YmcaError
 from ymca.memo import format_milliunits
