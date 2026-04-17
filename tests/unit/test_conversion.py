@@ -3,8 +3,11 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from tests.fakes import FakeGateway
-from ymca.conversion import build_prepared_conversion, execute_conversion
+from ymca.conversion import build_prepared_conversion, execute_conversion, resolve_bindings
+from ymca.errors import ApiError, ConfigError, UserInputError
 from ymca.models import (
     AccountConfig,
     AccountSnapshot,
@@ -549,6 +552,473 @@ def test_build_prepared_conversion_keeps_zero_amount_transactions() -> None:
     assert prepared.updates[0].converted_amount_milliunits == 0
     assert prepared.updates[0].new_memo == "Adjustment | [FX] 0 HKD (rate: 7.8 HKD/USD)"
     assert prepared.skipped == ()
+
+
+def _single_account_plan(divide_to_base: bool = True) -> PlanConfig:
+    return PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(alias="travel_hkd", name="Travel HKD", currency="HKD", enabled=True),
+        ),
+        fx_rates={
+            "HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=divide_to_base),
+        },
+    )
+
+
+def test_resolve_bindings_raises_when_plan_not_found() -> None:
+    gateway = FakeGateway(plans=(), account_snapshots={}, transaction_details={})
+    with pytest.raises(ApiError, match="was not found"):
+        resolve_bindings(_single_account_plan(), gateway)
+
+
+def test_resolve_bindings_raises_when_multiple_plans_match() -> None:
+    gateway = FakeGateway(
+        plans=(
+            RemotePlan(id="plan-1", name="Example Plan"),
+            RemotePlan(id="plan-2", name="Example Plan"),
+        ),
+        account_snapshots={},
+        transaction_details={},
+    )
+    with pytest.raises(ApiError, match="matched multiple YNAB plans"):
+        resolve_bindings(_single_account_plan(), gateway)
+
+
+def test_resolve_bindings_raises_when_account_missing() -> None:
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(accounts=(), server_knowledge=0),
+        },
+        transaction_details={},
+    )
+    with pytest.raises(ApiError, match="was not found"):
+        resolve_bindings(_single_account_plan(), gateway)
+
+
+def test_resolve_bindings_raises_when_account_matches_multiple() -> None:
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),
+                    RemoteAccount(id="acct-2", name="Travel HKD", deleted=False),
+                ),
+                server_knowledge=0,
+            ),
+        },
+        transaction_details={},
+    )
+    with pytest.raises(ApiError, match="matched multiple YNAB accounts"):
+        resolve_bindings(_single_account_plan(), gateway)
+
+
+def test_resolve_bindings_skips_deleted_remote_accounts() -> None:
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(id="acct-1", name="Travel HKD", deleted=True),
+                    RemoteAccount(id="acct-2", name="Travel HKD", deleted=False),
+                ),
+                server_knowledge=0,
+            ),
+        },
+        transaction_details={},
+    )
+    bindings = resolve_bindings(_single_account_plan(), gateway)
+    assert bindings.account_ids == {"travel_hkd": "acct-2"}
+
+
+def test_build_prepared_conversion_raises_when_no_accounts_enabled() -> None:
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(alias="travel_hkd", name="Travel HKD", currency="HKD", enabled=False),
+        ),
+        fx_rates={"HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True)},
+    )
+    gateway = FakeGateway(plans=(), account_snapshots={}, transaction_details={})
+
+    with pytest.raises(ConfigError, match="No enabled accounts"):
+        build_prepared_conversion(
+            plan=plan,
+            state=AppState(version=1, plans={}),
+            gateway=gateway,
+            selected_account_aliases=(),
+            bootstrap_since=None,
+            prompt_for_start_date=lambda: date(2026, 4, 1),
+        )
+
+
+def test_build_prepared_conversion_raises_for_unknown_account_alias() -> None:
+    gateway = FakeGateway(plans=(), account_snapshots={}, transaction_details={})
+    with pytest.raises(UserInputError, match="Unknown or disabled"):
+        build_prepared_conversion(
+            plan=_single_account_plan(),
+            state=AppState(version=1, plans={}),
+            gateway=gateway,
+            selected_account_aliases=("does_not_exist",),
+            bootstrap_since=None,
+            prompt_for_start_date=lambda: date(2026, 4, 1),
+        )
+
+
+def test_build_prepared_conversion_prompts_when_no_bootstrap_or_state() -> None:
+    plan = _single_account_plan()
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            ),
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-1": [TransactionSnapshot(transactions=(), server_knowledge=50)],
+        },
+    )
+
+    prompts: list[str] = []
+
+    def _prompt() -> date:
+        prompts.append("called")
+        return date(2026, 4, 1)
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=None,
+        prompt_for_start_date=_prompt,
+    )
+
+    assert prompts == ["called"]
+    assert prepared.sync_request.used_bootstrap is True
+    assert prepared.sync_request.since_date == date(2026, 4, 1)
+    assert prepared.sync_request.last_knowledge_of_server is None
+
+
+def test_build_prepared_conversion_skips_deleted_and_split_transactions() -> None:
+    plan = _single_account_plan()
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            ),
+        },
+        transaction_details={
+            "txn-split": RemoteTransactionDetail(
+                id="txn-split",
+                date=date(2026, 4, 12),
+                amount_milliunits=5000,
+                memo="Split",
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=2,
+            ),
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-deleted",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=1000,
+                            memo=None,
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=True,
+                        ),
+                        RemoteTransaction(
+                            id="txn-split",
+                            date=date(2026, 4, 12),
+                            amount_milliunits=5000,
+                            memo="Split",
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=42,
+                ),
+            ]
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    reasons = {skip.transaction_id: skip.reason for skip in prepared.skipped}
+    assert reasons == {"txn-deleted": "deleted", "txn-split": "split"}
+    assert prepared.updates == ()
+
+
+def test_build_prepared_conversion_multiply_path_when_divide_false() -> None:
+    plan = _single_account_plan(divide_to_base=False)
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            ),
+        },
+        transaction_details={
+            "txn-1": RemoteTransactionDetail(
+                id="txn-1",
+                date=date(2026, 4, 10),
+                amount_milliunits=1000,
+                memo=None,
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=0,
+            ),
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-1",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=1000,
+                            memo=None,
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=42,
+                ),
+            ]
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert len(prepared.updates) == 1
+    assert prepared.updates[0].converted_amount_milliunits == 7800
+    assert prepared.updates[0].pair_label == "USD/HKD"
+
+
+def test_build_prepared_conversion_split_transfer_is_skipped_not_converted() -> None:
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(alias="travel_hkd", name="Travel HKD", currency="HKD", enabled=True),
+            AccountConfig(alias="cash_hkd", name="Cash HKD", currency="HKD", enabled=True),
+        ),
+        fx_rates={"HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True)},
+    )
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),
+                    RemoteAccount(id="acct-2", name="Cash HKD", deleted=False),
+                ),
+                server_knowledge=1,
+            ),
+        },
+        transaction_details={
+            "txn-out": RemoteTransactionDetail(
+                id="txn-out",
+                date=date(2026, 4, 10),
+                amount_milliunits=-12340,
+                memo="Split transfer",
+                account_id="acct-1",
+                transfer_account_id="acct-2",
+                transfer_transaction_id="txn-in",
+                deleted=False,
+                subtransaction_count=2,
+            ),
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-out",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=-12340,
+                            memo="Split transfer",
+                            account_id="acct-1",
+                            transfer_account_id="acct-2",
+                            transfer_transaction_id="txn-in",
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=44,
+                ),
+            ],
+            "acct-2": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-in",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=12340,
+                            memo="Split transfer",
+                            account_id="acct-2",
+                            transfer_account_id="acct-1",
+                            transfer_transaction_id="txn-out",
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=44,
+                ),
+            ],
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert prepared.updates == ()
+    reasons = {skip.transaction_id: skip.reason for skip in prepared.skipped}
+    assert reasons == {"txn-out": "split", "txn-in": "paired-transfer"}
+
+
+def test_build_prepared_conversion_keeps_single_side_of_transfer_to_unconfigured_account() -> None:
+    plan = _single_account_plan()
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            ),
+        },
+        transaction_details={
+            "txn-out": RemoteTransactionDetail(
+                id="txn-out",
+                date=date(2026, 4, 10),
+                amount_milliunits=-12340,
+                memo="Move money",
+                account_id="acct-1",
+                transfer_account_id="acct-unconfigured",
+                transfer_transaction_id="txn-unseen",
+                deleted=False,
+                subtransaction_count=0,
+            ),
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-out",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=-12340,
+                            memo="Move money",
+                            account_id="acct-1",
+                            transfer_account_id="acct-unconfigured",
+                            transfer_transaction_id="txn-unseen",
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=44,
+                ),
+            ],
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert len(prepared.updates) == 1
+    assert prepared.updates[0].transaction_id == "txn-out"
+    assert prepared.updates[0].is_transfer is True
+    assert prepared.skipped == ()
+
+
+def test_execute_conversion_dry_run_returns_without_writing() -> None:
+    plan = _single_account_plan()
+    gateway = FakeGateway(plans=(), account_snapshots={}, transaction_details={})
+    prepared = PreparedConversion(
+        bindings=ResolvedBindings(
+            plan=plan,
+            plan_id="plan-1",
+            account_ids={"travel_hkd": "acct-1"},
+        ),
+        sync_request=SyncRequest(
+            last_knowledge_of_server=10,
+            since_date=None,
+            used_bootstrap=False,
+        ),
+        queried_account_ids=("acct-1",),
+        fetched_transactions=1,
+        fetched_server_knowledge=10,
+        updates=(
+            _prepared_update(
+                transaction_id="txn-1",
+                account_alias="travel_hkd",
+                memo="[FX] 1.00 HKD (rate: 7.8 HKD/USD)",
+            ),
+        ),
+        skipped=(),
+    )
+
+    outcome = execute_conversion(
+        prepared=prepared,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        apply_updates=False,
+    )
+
+    assert outcome.applied is False
+    assert outcome.writes_performed == 0
+    assert outcome.saved_server_knowledge is None
+    assert gateway.updates == []
+    assert gateway.update_batches == []
 
 
 def _prepared_update(

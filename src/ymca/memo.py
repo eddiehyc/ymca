@@ -162,14 +162,6 @@ def format_memo_milliunits(
     return text
 
 
-def _milliunits_from_amount_text(amount_text: str) -> int:
-    amount = (Decimal(amount_text.replace(",", "")) * _THOUSAND).quantize(
-        _WHOLE_MILLIUNIT,
-        rounding=ROUND_HALF_UP,
-    )
-    return int(amount)
-
-
 def _trim_legacy_separator_suffix(text: str) -> str:
     return re.sub(rf"(?:\s*{_SEPARATOR_PATTERN}\s*)+$", "", text).strip()
 

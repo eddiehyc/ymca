@@ -16,6 +16,7 @@ ymca = "ymca:main"
 dev = [
     "mypy>=1.18.2",
     "pytest>=8.4.2",
+    "pytest-cov>=5.0.0",
     "ruff>=0.14.1",
     "types-PyYAML>=6.0.12.20250915",
 ]
@@ -30,6 +31,28 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: hits the real YNAB API and requires YNAB_API_KEY",
+]
+addopts = [
+    "--cov=src/ymca",
+    "--cov-report=term-missing",
+    "--cov-fail-under=90",
+]
+
+[tool.coverage.run]
+source = ["src/ymca"]
+branch = false
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
 
 [tool.ruff]
 target-version = "py313"
