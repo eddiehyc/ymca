@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 import yaml
@@ -209,7 +209,8 @@ def _parse_rate(value: object, field_name: str) -> tuple[Decimal, str]:
     if rate <= Decimal("1"):
         raise ConfigError(f"{field_name} must be greater than 1.")
 
-    normalized = format(rate.normalize(), "f")
+    rounded = rate.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    normalized = format(rounded.normalize(), "f")
     if "." in normalized:
         normalized = normalized.rstrip("0").rstrip(".")
     return rate, normalized

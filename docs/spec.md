@@ -146,6 +146,8 @@ FX semantics:
 - `divide_to_base: false` means `base = source * rate`
 - if base is `USD` and source is `HKD`, store `7.8` with `divide_to_base: true`
 - if base is `USD` and source is `GBP`, store `1.35` with `divide_to_base: false`
+- conversion math uses the configured `rate` value at full `Decimal` precision (whatever you type in YAML)
+- the rate string embedded in new `[FX]` markers from the main converter is the same value rounded to three decimal places (`ROUND_HALF_UP`), then normalized (trailing fractional zeros dropped when possible), matching memo formatting for long rates such as GBP
 
 ### 5.2 State File
 
@@ -206,6 +208,7 @@ The main CLI skips:
 - YNAB amounts are treated as milliunits
 - conversion uses `Decimal`
 - uploads are rounded to the nearest milliunit
+- FX `rate` values from config are not rounded for conversion math; memo markers use a shorter display form for the same rate (see Memo Format)
 
 Example:
 
@@ -226,13 +229,14 @@ The current FX marker is appended to the end of the memo.
 Examples:
 
 - `Dinner | [FX] -123.45 HKD (rate: 7.8 HKD/USD)`
-- `[FX] 500 HKD (rate: 0.12821 USD/HKD)`
-- `[FX] +/-78 HKD (rate: 0.12821 USD/HKD)`
+- `[FX] 500 HKD (rate: 0.128 USD/HKD)`
+- `[FX] +/-78 HKD (rate: 0.128 USD/HKD)`
 
 Formatting rules:
 
 - source amounts are rounded to 2 decimal places for memo display
-- trailing zeros after the decimal point are trimmed when possible
+- FX rates in new markers from the main converter are rounded to 3 decimal places for memo display (`ROUND_HALF_UP`)
+- trailing fractional zeros after the decimal point are trimmed when possible (for both source amounts and rates)
 - thousands separators are used when applicable
 - non-transfer positives show no sign
 - non-transfer negatives show `-`
@@ -272,7 +276,7 @@ Compatibility note:
 
 ### 10.1 Legacy Memo Migration
 
-The migration helper rewrites legacy memo text into the current `[FX]` structure.
+The migration helper rewrites legacy memo text into the current `[FX]` structure. It copies the legacy `(FX rate: ...)` numeric substring into the new marker without re-rounding, so migrated memos can still show more than three fractional digits if the old text did.
 
 Examples:
 
@@ -308,7 +312,7 @@ Example broken record:
 Repaired result:
 
 - amount: `612.49`
-- memo: `[FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)`
+- memo: `[FX] 4,777.44 HKD (rate: 0.12821 USD/HKD)` (the existing `[FX]` substring is kept; only the legacy segment is removed)
 
 Behavior:
 
