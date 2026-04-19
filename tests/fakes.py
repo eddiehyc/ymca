@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from itertools import count
 from typing import Literal
 
 from ymca.errors import ApiError
 from ymca.models import (
     AccountSnapshot,
+    NewTransactionRequest,
     RemotePlan,
     RemoteTransactionDetail,
     TransactionSnapshot,
@@ -31,6 +33,10 @@ class FakeGateway:
     list_transactions_by_account_calls: list[tuple[str, str, date | None, int | None]] = field(
         default_factory=list
     )
+    created_transactions: list[tuple[str, NewTransactionRequest]] = field(default_factory=list)
+    deleted_transactions: list[tuple[str, str]] = field(default_factory=list)
+    create_transaction_ids: list[str] = field(default_factory=list)
+    _generated_create_ids: count[int] = field(default_factory=lambda: count(start=1))
 
     def list_plans(self, *, include_accounts: bool = False) -> tuple[RemotePlan, ...]:
         del include_accounts
@@ -71,6 +77,15 @@ class FakeGateway:
         request_batch = tuple(requests)
         self.update_batches.append((plan_id, request_batch))
         self.updates.extend(request_batch)
+
+    def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
+        self.created_transactions.append((plan_id, request))
+        if self.create_transaction_ids:
+            return self.create_transaction_ids.pop(0)
+        return f"fake-created-{next(self._generated_create_ids)}"
+
+    def delete_transaction(self, plan_id: str, transaction_id: str) -> None:
+        self.deleted_transactions.append((plan_id, transaction_id))
 
 
 @dataclass

@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from ymca.memo import (
+    SENTINEL_PAYEE_NAME,
     amount_text_to_milliunits,
     append_fx_marker,
     build_fx_marker,
     build_fx_marker_from_amount_text,
+    build_sentinel_memo,
+    format_balance_milliunits,
     format_memo_milliunits,
     format_milliunits,
     has_fx_marker,
     has_legacy_fx_marker,
+    is_sentinel_payee,
+    memo_marker_currency,
+    memo_marker_has_transfer_prefix,
+    parse_sentinel_memo,
     replace_legacy_fx_marker,
+    source_amount_milliunits_from_marker,
 )
 
 
@@ -275,3 +285,121 @@ def test_amount_text_to_milliunits_uses_sign_prefix_when_no_fallback_sign() -> N
     assert amount_text_to_milliunits("-/+1") == -1000
     assert amount_text_to_milliunits("+/-1", fallback_sign=0) == 1000
     assert amount_text_to_milliunits("-/+1", fallback_sign=0) == -1000
+
+
+def test_format_balance_milliunits_keeps_two_decimals_and_thousands() -> None:
+    assert format_balance_milliunits(1234560) == "1,234.56"
+    assert format_balance_milliunits(-500000) == "-500.00"
+    assert format_balance_milliunits(0) == "0.00"
+    assert format_balance_milliunits(-1) == "0.00"
+
+
+def test_build_sentinel_memo_first_time_omits_prev_section() -> None:
+    memo = build_sentinel_memo(
+        currency="HKD",
+        balance_milliunits=1234560,
+        rate_text="7.8",
+        pair_label="HKD/USD",
+        updated_at=datetime(2026, 4, 19, 14, 30, 45, tzinfo=UTC),
+        drift_milliunits_stronger=0,
+        stronger_currency="USD",
+    )
+
+    assert memo == (
+        "[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | "
+        "updated 2026-04-19T14:30:45Z | drift 0.00 USD"
+    )
+
+
+def test_build_sentinel_memo_includes_prev_section_when_provided() -> None:
+    memo = build_sentinel_memo(
+        currency="HKD",
+        balance_milliunits=1234560,
+        rate_text="7.8",
+        pair_label="HKD/USD",
+        updated_at=datetime(2026, 4, 19, 14, 30, 45, tzinfo=UTC),
+        prev_balance_milliunits=1200000,
+        prev_updated_at=datetime(2026, 4, 18, 14, 30, 45, tzinfo=UTC),
+        drift_milliunits_stronger=-50,
+        stronger_currency="USD",
+    )
+
+    assert memo == (
+        "[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | "
+        "updated 2026-04-19T14:30:45Z | "
+        "prev 1,200.00 2026-04-18T14:30:45Z | drift -0.05 USD"
+    )
+
+
+def test_parse_sentinel_memo_round_trip_with_prev() -> None:
+    memo = build_sentinel_memo(
+        currency="GBP",
+        balance_milliunits=-120050,
+        rate_text="1.35",
+        pair_label="USD/GBP",
+        updated_at=datetime(2026, 4, 19, 14, 30, 45, tzinfo=UTC),
+        prev_balance_milliunits=-100000,
+        prev_updated_at=datetime(2026, 4, 18, 14, 30, 45, tzinfo=UTC),
+        drift_milliunits_stronger=20,
+        stronger_currency="GBP",
+    )
+
+    parsed = parse_sentinel_memo(memo)
+
+    assert parsed is not None
+    assert parsed["currency"] == "GBP"
+    assert parsed["balance_milliunits"] == -120050
+    assert parsed["rate_text"] == "1.35"
+    assert parsed["pair_label"] == "USD/GBP"
+    assert parsed["prev_balance_milliunits"] == -100000
+    assert parsed["drift_milliunits_stronger"] == 20
+    assert parsed["stronger_currency"] == "GBP"
+
+
+def test_parse_sentinel_memo_returns_none_for_nonsentinel_text() -> None:
+    assert parse_sentinel_memo(None) is None
+    assert parse_sentinel_memo("plain memo") is None
+    assert parse_sentinel_memo("[FX] 12.34 HKD (rate: 7.8 HKD/USD)") is None
+
+
+def test_is_sentinel_payee_exact_match_only() -> None:
+    assert is_sentinel_payee(SENTINEL_PAYEE_NAME) is True
+    assert is_sentinel_payee(None) is False
+    assert is_sentinel_payee("ymca tracked balance") is False
+    assert is_sentinel_payee(f"{SENTINEL_PAYEE_NAME} (v2)") is False
+
+
+def test_source_amount_milliunits_from_marker_reads_current_marker() -> None:
+    memo = "Dinner | [FX] -12.34 HKD (rate: 7.8 HKD/USD)"
+    assert source_amount_milliunits_from_marker(memo) == -12340
+
+
+def test_source_amount_milliunits_from_marker_reads_legacy_marker() -> None:
+    memo = "Lunch | 78 HKD (FX rate: 0.12821)"
+    assert source_amount_milliunits_from_marker(memo) == 78000
+
+
+def test_source_amount_milliunits_from_marker_uses_fallback_sign_for_plus_minus() -> None:
+    memo = "Move | [FX] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert source_amount_milliunits_from_marker(memo, fallback_sign=-1) == -12340
+    assert source_amount_milliunits_from_marker(memo, fallback_sign=1) == 12340
+
+
+def test_source_amount_milliunits_from_marker_returns_none_without_marker() -> None:
+    assert source_amount_milliunits_from_marker(None) is None
+    assert source_amount_milliunits_from_marker("Just a plain memo") is None
+
+
+def test_memo_marker_has_transfer_prefix_detects_literal_symbols() -> None:
+    assert memo_marker_has_transfer_prefix("[FX] +/-12.34 HKD (rate: 7.8 HKD/USD)") is True
+    assert memo_marker_has_transfer_prefix("[FX] 12.34 HKD (rate: 7.8 HKD/USD)") is False
+    assert memo_marker_has_transfer_prefix("78 HKD (FX rate: 0.12821)") is False
+    assert memo_marker_has_transfer_prefix(None) is False
+    assert memo_marker_has_transfer_prefix("plain memo") is False
+
+
+def test_memo_marker_currency_returns_source_currency_for_both_formats() -> None:
+    assert memo_marker_currency("[FX] 12.34 HKD (rate: 7.8 HKD/USD)") == "HKD"
+    assert memo_marker_currency("78 GBP (FX rate: 1.35)") == "GBP"
+    assert memo_marker_currency(None) is None
+    assert memo_marker_currency("plain") is None

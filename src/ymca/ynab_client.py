@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
+from uuid import UUID
 
 import ynab
 from ynab.rest import ApiException  # type: ignore[attr-defined]
@@ -10,6 +11,8 @@ from ynab.rest import ApiException  # type: ignore[attr-defined]
 from .errors import ApiError
 from .models import (
     AccountSnapshot,
+    ClearedStatus,
+    NewTransactionRequest,
     RemoteAccount,
     RemotePlan,
     RemoteTransaction,
@@ -132,6 +135,39 @@ class YnabClient:
         except ApiException as exc:
             raise ApiError(_format_api_exception("update transactions", exc)) from exc
 
+    def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
+        transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        payload = ynab.PostTransactionsWrapper(
+            transaction=ynab.NewTransaction(
+                account_id=UUID(request.account_id),
+                date=request.date,
+                amount=request.amount_milliunits,
+                payee_name=request.payee_name,
+                memo=request.memo,
+                cleared=ynab.TransactionClearedStatus(request.cleared),
+            )
+        )
+        try:
+            response = transactions_api.create_transaction(plan_id, payload)
+        except ApiException as exc:
+            raise ApiError(_format_api_exception("create transaction", exc)) from exc
+
+        transaction = getattr(response, "transaction", None)
+        if transaction is not None and getattr(transaction, "id", None) is not None:
+            return str(transaction.id)
+
+        created = getattr(response, "transactions", None) or []
+        if created:
+            return str(created[0].id)
+        raise ApiError("Create transaction response did not include a transaction id.")
+
+    def delete_transaction(self, plan_id: str, transaction_id: str) -> None:
+        transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        try:
+            transactions_api.delete_transaction(plan_id, transaction_id)
+        except ApiException as exc:
+            raise ApiError(_format_api_exception("delete transaction", exc)) from exc
+
     def _map_plan(self, raw_plan: Any) -> RemotePlan:
         raw_accounts = getattr(raw_plan, "accounts", None) or []
         return RemotePlan(
@@ -141,11 +177,13 @@ class YnabClient:
         )
 
     def _map_account(self, raw_account: Any) -> RemoteAccount:
+        cleared_balance = getattr(raw_account, "cleared_balance", 0)
         return RemoteAccount(
             id=str(raw_account.id),
             name=str(raw_account.name),
             deleted=bool(raw_account.deleted),
             closed=bool(raw_account.closed),
+            cleared_balance_milliunits=int(cleared_balance) if cleared_balance is not None else 0,
         )
 
     def _map_transaction(self, raw_transaction: Any) -> RemoteTransaction:
@@ -158,6 +196,8 @@ class YnabClient:
             transfer_account_id=_optional_string(raw_transaction.transfer_account_id),
             transfer_transaction_id=_optional_string(raw_transaction.transfer_transaction_id),
             deleted=bool(raw_transaction.deleted),
+            payee_name=_optional_string(getattr(raw_transaction, "payee_name", None)),
+            cleared=_map_cleared(getattr(raw_transaction, "cleared", None)),
         )
 
     def _map_transaction_detail(self, raw_transaction: Any) -> RemoteTransactionDetail:
@@ -172,6 +212,8 @@ class YnabClient:
             transfer_transaction_id=_optional_string(raw_transaction.transfer_transaction_id),
             deleted=bool(raw_transaction.deleted),
             subtransaction_count=len(raw_subtransactions),
+            payee_name=_optional_string(getattr(raw_transaction, "payee_name", None)),
+            cleared=_map_cleared(getattr(raw_transaction, "cleared", None)),
         )
 
     def _require_api(self, api: Any | None, api_name: str) -> Any:
@@ -186,6 +228,19 @@ def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _map_cleared(value: Any) -> ClearedStatus:
+    """Normalize YNAB's TransactionClearedStatus enum to our Literal."""
+    if value is None:
+        return "uncleared"
+    raw = getattr(value, "value", value)
+    text = str(raw).lower()
+    if text == "cleared":
+        return "cleared"
+    if text == "reconciled":
+        return "reconciled"
+    return "uncleared"
 
 
 def _require_date(value: Any, field_name: str) -> date:

@@ -36,6 +36,7 @@ from ymca.models import (
     AccountSnapshot,
     AppState,
     FxRule,
+    NewTransactionRequest,
     PlanConfig,
     RemoteAccount,
     RemotePlan,
@@ -213,6 +214,11 @@ class CountingYnabClient:
             lambda: self._transactions_api.create_transaction(plan_id, payload)
         )
         return list(getattr(response.data, "transactions", None) or [])
+
+    def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
+        """YnabGateway.create_transaction: forwards to the production adapter."""
+        self._guard_write(plan_id)
+        return self._invoke(lambda: self._ynab.create_transaction(plan_id, request))
 
     def delete_transaction(self, plan_id: str, transaction_id: str) -> None:
         self._guard_write(plan_id)

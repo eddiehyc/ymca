@@ -23,10 +23,11 @@ from ynab.rest import ApiException  # type: ignore[attr-defined]
 
 from ymca import ynab_client as ynab_client_module
 from ymca.errors import ApiError
-from ymca.models import TransactionUpdateRequest
+from ymca.models import NewTransactionRequest, TransactionUpdateRequest
 from ymca.ynab_client import (
     YnabClient,
     _format_api_exception,
+    _map_cleared,
     _optional_string,
     _require_date,
 )
@@ -552,3 +553,209 @@ def test_format_api_exception_handles_minimal_exc() -> None:
     assert "Failed to do stuff" in message
     assert "status=400" in message
     assert "reason=Bad" in message
+
+
+def test_map_cleared_normalizes_enum_values() -> None:
+    assert _map_cleared(None) == "uncleared"
+    assert _map_cleared(SimpleNamespace(value="cleared")) == "cleared"
+    assert _map_cleared(SimpleNamespace(value="reconciled")) == "reconciled"
+    assert _map_cleared(SimpleNamespace(value="Other")) == "uncleared"
+    assert _map_cleared("cleared") == "cleared"
+
+
+def test_ynab_client_create_transaction_returns_single_id(monkeypatch: MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _TransactionsApi(_FakeApi):
+        def create_transaction(self, plan_id: str, payload: Any) -> Any:
+            captured["plan_id"] = plan_id
+            captured["payload"] = payload
+            return SimpleNamespace(
+                transaction=SimpleNamespace(id="created-1"),
+                transactions=None,
+            )
+
+    monkeypatch.setattr(
+        ynab,
+        "PostTransactionsWrapper",
+        lambda transaction: SimpleNamespace(transaction=transaction),
+    )
+    monkeypatch.setattr(
+        ynab,
+        "NewTransaction",
+        lambda account_id, date, amount, payee_name, memo, cleared: SimpleNamespace(
+            account_id=account_id,
+            date=date,
+            amount=amount,
+            payee_name=payee_name,
+            memo=memo,
+            cleared=cleared,
+        ),
+    )
+    monkeypatch.setattr(ynab, "TransactionClearedStatus", lambda value: value)
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+
+    request = NewTransactionRequest(
+        account_id="00000000-0000-0000-0000-000000000001",
+        date=date(2026, 4, 19),
+        amount_milliunits=0,
+        memo="memo",
+        payee_name="[YMCA] Tracked Balance",
+        cleared="reconciled",
+    )
+    with YnabClient("secret") as client:
+        new_id = client.create_transaction("p1", request)
+    assert new_id == "created-1"
+    assert captured["plan_id"] == "p1"
+
+
+def test_ynab_client_create_transaction_falls_back_to_transactions_list(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class _TransactionsApi(_FakeApi):
+        def create_transaction(self, plan_id: str, payload: Any) -> Any:
+            return SimpleNamespace(
+                transaction=None,
+                transactions=[SimpleNamespace(id="batch-1")],
+            )
+
+    monkeypatch.setattr(
+        ynab,
+        "PostTransactionsWrapper",
+        lambda transaction: SimpleNamespace(transaction=transaction),
+    )
+    monkeypatch.setattr(
+        ynab,
+        "NewTransaction",
+        lambda **_kw: SimpleNamespace(**_kw),
+    )
+    monkeypatch.setattr(ynab, "TransactionClearedStatus", lambda value: value)
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+
+    request = NewTransactionRequest(
+        account_id="00000000-0000-0000-0000-000000000001",
+        date=date(2026, 4, 19),
+        amount_milliunits=0,
+        memo="memo",
+        payee_name="payee",
+        cleared="reconciled",
+    )
+    with YnabClient("secret") as client:
+        new_id = client.create_transaction("p1", request)
+    assert new_id == "batch-1"
+
+
+def test_ynab_client_create_transaction_wraps_exception(monkeypatch: MonkeyPatch) -> None:
+    class _TransactionsApi(_FakeApi):
+        def create_transaction(self, *args: Any, **kwargs: Any) -> Any:
+            raise _FakeApiException()
+
+    monkeypatch.setattr(
+        ynab,
+        "PostTransactionsWrapper",
+        lambda transaction: SimpleNamespace(transaction=transaction),
+    )
+    monkeypatch.setattr(
+        ynab,
+        "NewTransaction",
+        lambda **_kw: SimpleNamespace(**_kw),
+    )
+    monkeypatch.setattr(ynab, "TransactionClearedStatus", lambda value: value)
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+
+    request = NewTransactionRequest(
+        account_id="00000000-0000-0000-0000-000000000001",
+        date=date(2026, 4, 19),
+        amount_milliunits=0,
+        memo="memo",
+        payee_name="payee",
+        cleared="reconciled",
+    )
+    with YnabClient("secret") as client, pytest.raises(ApiError) as exc:
+        client.create_transaction("p1", request)
+    assert "create transaction" in str(exc.value)
+
+
+def test_ynab_client_create_transaction_raises_when_response_missing_id(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class _TransactionsApi(_FakeApi):
+        def create_transaction(self, plan_id: str, payload: Any) -> Any:
+            return SimpleNamespace(transaction=None, transactions=[])
+
+    monkeypatch.setattr(
+        ynab,
+        "PostTransactionsWrapper",
+        lambda transaction: SimpleNamespace(transaction=transaction),
+    )
+    monkeypatch.setattr(ynab, "NewTransaction", lambda **_kw: SimpleNamespace(**_kw))
+    monkeypatch.setattr(ynab, "TransactionClearedStatus", lambda value: value)
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+
+    request = NewTransactionRequest(
+        account_id="00000000-0000-0000-0000-000000000001",
+        date=date(2026, 4, 19),
+        amount_milliunits=0,
+        memo="memo",
+        payee_name="payee",
+        cleared="reconciled",
+    )
+    with YnabClient("secret") as client, pytest.raises(ApiError) as exc:
+        client.create_transaction("p1", request)
+    assert "did not include a transaction id" in str(exc.value)
+
+
+def test_ynab_client_delete_transaction_forwards_to_sdk(monkeypatch: MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _TransactionsApi(_FakeApi):
+        def delete_transaction(self, plan_id: str, transaction_id: str) -> Any:
+            captured["plan_id"] = plan_id
+            captured["transaction_id"] = transaction_id
+            return SimpleNamespace()
+
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+    with YnabClient("secret") as client:
+        client.delete_transaction("p1", "t1")
+    assert captured == {"plan_id": "p1", "transaction_id": "t1"}
+
+
+def test_ynab_client_delete_transaction_wraps_exception(monkeypatch: MonkeyPatch) -> None:
+    class _TransactionsApi(_FakeApi):
+        def delete_transaction(self, *args: Any, **kwargs: Any) -> Any:
+            raise _FakeApiException()
+
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+    with YnabClient("secret") as client, pytest.raises(ApiError) as exc:
+        client.delete_transaction("p1", "t1")
+    assert "delete transaction" in str(exc.value)

@@ -83,6 +83,20 @@ Script: [`deprecated/one_off_scripts/get_account_delta.py`](../deprecated/one_of
 - Unit: [`tests/unit/test_get_account_delta.py`](../tests/unit/test_get_account_delta.py).
 - Integration: not applicable (`deprecated/one_off_scripts/` stays unit-tested only).
 
+## W11. `ymca sync` with local currency tracking
+
+Opt-in, per-account. When an account has `track_local_balance: true`, `ymca sync` additionally maintains a source-currency running balance on a dedicated YNAB sentinel transaction (payee name `[YMCA] Tracked Balance`, amount `0`, cleared status `reconciled`). Balance updates are delta-based: a new cleared/reconciled transaction adds to the balance, a subsequent delete of such a transaction subtracts; uncleared transitions are not tracked (see E24, E25). Tolerance check at the end of the run warns if the tracked balance drifts beyond `0.01` stronger-currency units vs YNAB's `cleared_balance`.
+
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) and [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — covers the transition matrix, sentinel upsert, tolerance math.
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — seeds cleared/uncleared/transfer rows on a tracked account and asserts the sentinel memo reflects the running balance.
+
+## W12. `ymca sync --rebuild-balance`
+
+Recovery mode for a tracked account whose sentinel has drifted (e.g. a cleared transaction was edited, un-cleared, or the sentinel was edited by hand). Ignores saved `server_knowledge` for the selected accounts, re-fetches every active transaction, parses both legacy `(FX rate: ...)` and current `[FX] ...` markers to derive the source amount per row, and recomputes the sentinel from scratch. Requires at least one account in scope with `track_local_balance: true`; mutually exclusive with `--bootstrap-since`. Prompts interactively for the direction of any zero-amount transfer encountered (see E22).
+
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py), [`tests/unit/test_balance.py`](../tests/unit/test_balance.py), [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — covers full-scan parsing, argparse wiring, mutex enforcement.
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — runs a rebuild after synthetic drift and verifies the sentinel is corrected.
+
 ## Path Resolution Workflows
 
 These are cross-cutting behaviors exercised by several commands:

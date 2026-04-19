@@ -147,3 +147,66 @@ A `429 Too Many Requests` from YNAB triggers one retry after honoring `Retry-Aft
 If the integration harness makes more than the configured number of SDK calls in a session (default 150), it aborts with `BudgetExceededError`. This protects the YNAB API key from being locked out during a buggy run.
 
 - Integration: [`tests/integration/helpers.py`](../tests/integration/helpers.py) — `CountingYnabClient._check_budget`.
+
+### E21. Zero-amount non-transfer contributing to tracked balance
+
+A cleared or reconciled transaction whose YNAB base-currency amount is `0` may still carry a signed memo amount (e.g. FX conversion rounded `0.499 HKD` to `0`). Sign inference falls back to the memo sign when the YNAB amount is `0` and the transaction is not a transfer.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — rebuild path covers the sign-from-memo branch.
+
+### E22. Zero-amount transfer — interactive direction prompt
+
+A transfer transaction whose YNAB amount is `0` carries a `+/-` literal prefix in the memo; direction cannot be inferred from either source. During `ymca sync --rebuild-balance`, the CLI prompts interactively per offending row (`(i)n/(o)ut/(s)kip`). Non-TTY with `--apply` fails fast. Dry-run without a TTY surfaces the ambiguous rows in the summary and skips them.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py), [`tests/unit/test_cli.py`](../tests/unit/test_cli.py).
+- Integration: not covered by the live suite (interactive prompt); asserted via unit tests.
+
+### E23. Cleared/reconciled → deleted reverses balance; uncleared → deleted does nothing
+
+Delta-mode balance transitions:
+
+- A previously converted cleared/reconciled transaction that is now deleted causes the balance engine to subtract its parsed local-currency amount.
+- A previously converted uncleared transaction that is now deleted is a no-op for the balance (it was never counted).
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — deletes a cleared seed row and asserts the sentinel subtracts.
+
+### E24. Cleared → uncleared without deletion — unsupported drift
+
+The delta-mode algorithm has no per-transaction state, so transitioning a counted transaction from cleared/reconciled back to uncleared cannot be reversed. The balance will drift. Users are expected to run `ymca sync --rebuild-balance` after the fact.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — asserts the delta-mode no-op for uncleared transitions and the rebuild-mode recovery.
+- Integration: not a supported workflow (pure documentation edge case exercised through the unit tests).
+
+### E25. Modifying an already-converted cleared/reconciled transaction — unsupported drift
+
+Editing a cleared or reconciled transaction's amount or memo after FX conversion breaks the balance contract the same way as E24. `ymca sync --rebuild-balance` is the recovery path.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — rebuild path verifies the balance is restored.
+- Integration: not a supported workflow.
+
+### E26. First-time tracking enablement — bootstrap sentinel from history
+
+The first `ymca sync` after `track_local_balance: true` is added to an account creates the sentinel transaction by scanning the current delta and computing the initial balance. If the delta window does not cover historical transactions, users are expected to follow up with `ymca sync --rebuild-balance` to catch up.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — asserts the sentinel appears on first apply run.
+
+### E27. Tolerance check ≤ 0.01 stronger currency
+
+At the end of every sync run (delta or rebuild), YMCA compares the tracked source-currency balance to YNAB's reported `cleared_balance` in base currency. Drift is reported in the "stronger currency" (base when `divide_to_base: true`; source otherwise). Drift beyond `0.01` of that unit prints a warning and suggests `ymca sync --rebuild-balance`; the run itself still exits `0`.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — exact-boundary, under, and over cases for both FX directions.
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — drift-free path under live data.
+
+### E28. Sentinel transaction detection and exclusion
+
+The sentinel is identified by exact payee-name match against `[YMCA] Tracked Balance`. The sentinel row:
+
+- is never FX-converted,
+- is never counted towards the tracked balance,
+- is upserted (created on first enablement, updated thereafter) at the end of each sync run for every tracked account in scope.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py).

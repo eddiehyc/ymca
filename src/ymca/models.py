@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 CONFIG_VERSION = 1
 STATE_VERSION = 1
+
+ClearedStatus = Literal["cleared", "uncleared", "reconciled"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +24,10 @@ class FxRule:
             return f"{source_currency}/{base_currency}"
         return f"{base_currency}/{source_currency}"
 
+    @property
+    def stronger_currency_is_base(self) -> bool:
+        return self.divide_to_base
+
 
 @dataclass(frozen=True, slots=True)
 class AccountConfig:
@@ -28,6 +35,7 @@ class AccountConfig:
     name: str
     currency: str
     enabled: bool
+    track_local_balance: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +78,7 @@ class RemoteAccount:
     name: str
     deleted: bool
     closed: bool = False
+    cleared_balance_milliunits: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +104,8 @@ class RemoteTransaction:
     transfer_account_id: str | None
     transfer_transaction_id: str | None
     deleted: bool
+    payee_name: str | None = None
+    cleared: ClearedStatus = "uncleared"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +119,8 @@ class RemoteTransactionDetail:
     transfer_transaction_id: str | None
     deleted: bool
     subtransaction_count: int
+    payee_name: str | None = None
+    cleared: ClearedStatus = "uncleared"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,10 +137,21 @@ class TransactionUpdateRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class NewTransactionRequest:
+    account_id: str
+    date: date
+    amount_milliunits: int
+    memo: str
+    payee_name: str | None
+    cleared: ClearedStatus
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedBindings:
     plan: PlanConfig
     plan_id: str
     account_ids: Mapping[str, str]
+    remote_accounts_by_alias: Mapping[str, RemoteAccount] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +188,60 @@ class SkippedTransaction:
 
 
 @dataclass(frozen=True, slots=True)
+class SentinelSnapshot:
+    """Parsed state of an existing sentinel transaction for a tracked account."""
+
+    id: str
+    date: date
+    memo: str
+    cleared: ClearedStatus
+    deleted: bool
+    balance_milliunits: int
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceContribution:
+    """A signed local-currency contribution from one transaction to the running balance."""
+
+    transaction_id: str
+    signed_source_milliunits: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguousTransfer:
+    """A zero-amount transfer whose direction could not be inferred."""
+
+    transaction_id: str
+    date: date
+    account_alias: str
+    memo_amount_milliunits: int
+    currency: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedTrackingUpdate:
+    """Local-currency tracking plan for a single account in a single run."""
+
+    account_alias: str
+    currency: str
+    account_id: str
+    account_name: str
+    prior_sentinel: SentinelSnapshot | None
+    prior_balance_milliunits: int
+    contributions: tuple[BalanceContribution, ...]
+    ambiguous_transfers: tuple[AmbiguousTransfer, ...]
+    new_balance_milliunits: int
+    ynab_cleared_balance_milliunits: int
+    stronger_currency: str
+    drift_milliunits_stronger: int
+    within_tolerance: bool
+    rebuild: bool
+    create_sentinel: NewTransactionRequest | None
+    update_sentinel: TransactionUpdateRequest | None
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedConversion:
     bindings: ResolvedBindings
     sync_request: SyncRequest
@@ -172,6 +250,8 @@ class PreparedConversion:
     fetched_server_knowledge: int
     updates: tuple[PreparedUpdate, ...]
     skipped: tuple[SkippedTransaction, ...]
+    tracking: tuple[PreparedTrackingUpdate, ...] = ()
+    rebuild_balance: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,3 +261,15 @@ class ConversionOutcome:
     writes_performed: int
     saved_server_knowledge: int | None
     new_state: AppState
+    sentinel_writes: int = 0
+    sentinels_created: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TrackedBalance:
+    """Human-facing summary of a tracked balance as of a point in time."""
+
+    account_alias: str
+    currency: str
+    balance_milliunits: int
+    as_of: datetime

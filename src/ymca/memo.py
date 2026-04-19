@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 _THOUSAND = Decimal("1000")
@@ -26,6 +27,20 @@ LEGACY_FX_MARKER_RE = re.compile(
     r"(?P<currency>[A-Z]{3})\s+"
     r"\(FX rate:\s*(?P<rate>[0-9]+(?:\.[0-9]+)?)\)"
 )
+
+SENTINEL_PAYEE_NAME = "[YMCA] Tracked Balance"
+_SENTINEL_ISO_PATTERN = r"[0-9T:\-Z.+]+"
+_SENTINEL_PATTERN = (
+    r"^\[YMCA-BAL\]\s+"
+    r"(?P<currency>[A-Z]{3})\s+"
+    r"(?P<amount>" + _AMOUNT_PATTERN + r")\s+\|\s+"
+    r"rate\s+(?P<rate>[0-9]+(?:\.[0-9]+)?)\s+(?P<pair>[A-Z]{3}/[A-Z]{3})\s+\|\s+"
+    r"updated\s+(?P<updated>" + _SENTINEL_ISO_PATTERN + r")"
+    r"(?:\s+\|\s+prev\s+(?P<prev_amount>" + _AMOUNT_PATTERN + r")"
+    r"\s+(?P<prev_updated>" + _SENTINEL_ISO_PATTERN + r"))?"
+    r"\s+\|\s+drift\s+(?P<drift>" + _AMOUNT_PATTERN + r")\s+(?P<stronger>[A-Z]{3})$"
+)
+SENTINEL_MEMO_RE = re.compile(_SENTINEL_PATTERN)
 
 
 def has_fx_marker(memo: str | None) -> bool:
@@ -192,3 +207,147 @@ def _resolve_amount_sign(sign_token: str, *, fallback_sign: int | None) -> int:
     if fallback_sign is not None and fallback_sign != 0:
         return -1 if fallback_sign < 0 else 1
     return -1 if sign_token.startswith("-") else 1
+
+
+def format_balance_milliunits(amount_milliunits: int) -> str:
+    """Format a signed balance for inclusion in a sentinel memo.
+
+    Keeps two decimal places with thousands separators; does not drop trailing
+    zeros (consistent fixed precision makes sentinel memos easy to scan).
+    """
+    amount = (Decimal(amount_milliunits) / _THOUSAND).quantize(
+        _TWO_PLACES, rounding=ROUND_HALF_UP
+    )
+    if amount == 0:
+        amount = abs(amount)
+    return f"{amount:,.2f}"
+
+
+def build_sentinel_memo(
+    *,
+    currency: str,
+    balance_milliunits: int,
+    rate_text: str,
+    pair_label: str,
+    updated_at: datetime,
+    prev_balance_milliunits: int | None = None,
+    prev_updated_at: datetime | None = None,
+    drift_milliunits_stronger: int,
+    stronger_currency: str,
+) -> str:
+    """Build the single-line sentinel memo string per spec §12.3."""
+    amount_text = format_balance_milliunits(balance_milliunits)
+    updated_text = _format_sentinel_datetime(updated_at)
+    drift_text = format_balance_milliunits(drift_milliunits_stronger)
+
+    parts = [
+        f"[YMCA-BAL] {currency} {amount_text}",
+        f"rate {rate_text} {pair_label}",
+        f"updated {updated_text}",
+    ]
+    if prev_balance_milliunits is not None and prev_updated_at is not None:
+        prev_amount_text = format_balance_milliunits(prev_balance_milliunits)
+        prev_updated_text = _format_sentinel_datetime(prev_updated_at)
+        parts.append(f"prev {prev_amount_text} {prev_updated_text}")
+    parts.append(f"drift {drift_text} {stronger_currency}")
+    return " | ".join(parts)
+
+
+def parse_sentinel_memo(memo: str | None) -> dict[str, object] | None:
+    """Parse a sentinel memo back into a dict of fields.
+
+    Returns ``None`` when ``memo`` does not match the sentinel shape.
+    """
+    if memo is None:
+        return None
+    match = SENTINEL_MEMO_RE.match(memo.strip())
+    if match is None:
+        return None
+
+    currency = match.group("currency")
+    amount_milliunits = amount_text_to_milliunits(match.group("amount"))
+    rate = match.group("rate")
+    pair = match.group("pair")
+    updated_at = _parse_sentinel_datetime(match.group("updated"))
+    stronger = match.group("stronger")
+    drift_milliunits = amount_text_to_milliunits(match.group("drift"))
+
+    prev_amount_text = match.group("prev_amount")
+    prev_updated_text = match.group("prev_updated")
+    prev_balance_milliunits: int | None = None
+    prev_updated_at: datetime | None = None
+    if prev_amount_text is not None and prev_updated_text is not None:
+        prev_balance_milliunits = amount_text_to_milliunits(prev_amount_text)
+        prev_updated_at = _parse_sentinel_datetime(prev_updated_text)
+
+    return {
+        "currency": currency,
+        "balance_milliunits": amount_milliunits,
+        "rate_text": rate,
+        "pair_label": pair,
+        "updated_at": updated_at,
+        "prev_balance_milliunits": prev_balance_milliunits,
+        "prev_updated_at": prev_updated_at,
+        "drift_milliunits_stronger": drift_milliunits,
+        "stronger_currency": stronger,
+    }
+
+
+def is_sentinel_payee(payee_name: str | None) -> bool:
+    return payee_name == SENTINEL_PAYEE_NAME
+
+
+def source_amount_milliunits_from_marker(
+    memo: str | None,
+    *,
+    fallback_sign: int | None = None,
+) -> int | None:
+    """Return the signed source-currency amount embedded in an FX marker.
+
+    Tries the current ``[FX]`` marker first, then the legacy ``(FX rate: ...)``
+    form. Returns ``None`` when no marker is present. When the memo encodes
+    a transfer (``+/-`` literal), ``fallback_sign`` is used to resolve the
+    direction; pass ``None`` if the caller needs the caller-side prompt.
+    """
+    if memo is None:
+        return None
+    for pattern in (FX_MARKER_RE, LEGACY_FX_MARKER_RE):
+        match = pattern.search(memo)
+        if match is None:
+            continue
+        amount_text = match.group("amount")
+        return amount_text_to_milliunits(amount_text, fallback_sign=fallback_sign)
+    return None
+
+
+def memo_marker_has_transfer_prefix(memo: str | None) -> bool:
+    """Return True when the FX marker in ``memo`` carries the ``+/-`` literal."""
+    if memo is None:
+        return False
+    for pattern in (FX_MARKER_RE, LEGACY_FX_MARKER_RE):
+        match = pattern.search(memo)
+        if match is None:
+            continue
+        amount_text = match.group("amount")
+        return amount_text.startswith("+/-") or amount_text.startswith("-/+")
+    return False
+
+
+def memo_marker_currency(memo: str | None) -> str | None:
+    """Return the source currency from an FX marker, or None if absent."""
+    if memo is None:
+        return None
+    for pattern in (FX_MARKER_RE, LEGACY_FX_MARKER_RE):
+        match = pattern.search(memo)
+        if match is not None:
+            return match.group("currency")
+    return None
+
+
+def _format_sentinel_datetime(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_sentinel_datetime(text: str) -> datetime:
+    normalized = text.rstrip("Z")
+    return datetime.fromisoformat(normalized)

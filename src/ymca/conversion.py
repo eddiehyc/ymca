@@ -2,21 +2,31 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Protocol
 
+from .balance import TransferDirectionPrompt, build_tracking_update
 from .errors import ApiError, ConfigError, UserInputError
-from .memo import append_fx_marker, build_fx_marker, has_fx_marker, has_legacy_fx_marker
+from .memo import (
+    append_fx_marker,
+    build_fx_marker,
+    has_fx_marker,
+    has_legacy_fx_marker,
+    is_sentinel_payee,
+)
 from .models import (
     AccountConfig,
     AccountSnapshot,
     AppState,
     ConversionOutcome,
+    NewTransactionRequest,
     PlanConfig,
     PlanState,
     PreparedConversion,
+    PreparedTrackingUpdate,
     PreparedUpdate,
+    RemoteAccount,
     RemotePlan,
     RemoteTransaction,
     RemoteTransactionDetail,
@@ -55,6 +65,10 @@ class YnabGateway(Protocol):
         self, plan_id: str, requests: Sequence[TransactionUpdateRequest]
     ) -> None: ...
 
+    def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str: ...
+
+    def delete_transaction(self, plan_id: str, transaction_id: str) -> None: ...
+
 
 def resolve_bindings(plan: PlanConfig, gateway: YnabGateway) -> ResolvedBindings:
     remote_plans = gateway.list_plans(include_accounts=False)
@@ -66,13 +80,14 @@ def resolve_bindings(plan: PlanConfig, gateway: YnabGateway) -> ResolvedBindings
 
     remote_plan = matching_plans[0]
     account_snapshot = gateway.list_accounts(remote_plan.id)
-    accounts_by_name: dict[str, list[str]] = defaultdict(list)
+    accounts_by_name: dict[str, list[RemoteAccount]] = defaultdict(list)
     for remote_account in account_snapshot.accounts:
         if remote_account.deleted:
             continue
-        accounts_by_name[remote_account.name].append(remote_account.id)
+        accounts_by_name[remote_account.name].append(remote_account)
 
     account_ids: dict[str, str] = {}
+    remote_accounts_by_alias: dict[str, RemoteAccount] = {}
     for account in plan.accounts:
         matches = accounts_by_name.get(account.name, [])
         if not matches:
@@ -85,9 +100,15 @@ def resolve_bindings(plan: PlanConfig, gateway: YnabGateway) -> ResolvedBindings
                 "Configured account "
                 f"{account.alias!r} with name {account.name!r} matched multiple YNAB accounts."
             )
-        account_ids[account.alias] = matches[0]
+        account_ids[account.alias] = matches[0].id
+        remote_accounts_by_alias[account.alias] = matches[0]
 
-    return ResolvedBindings(plan=plan, plan_id=remote_plan.id, account_ids=account_ids)
+    return ResolvedBindings(
+        plan=plan,
+        plan_id=remote_plan.id,
+        account_ids=account_ids,
+        remote_accounts_by_alias=remote_accounts_by_alias,
+    )
 
 
 def build_prepared_conversion(
@@ -98,14 +119,29 @@ def build_prepared_conversion(
     selected_account_aliases: Sequence[str],
     bootstrap_since: date | None,
     prompt_for_start_date: Callable[[], date],
+    rebuild_balance: bool = False,
+    prompt_for_transfer_direction: TransferDirectionPrompt | None = None,
+    now_utc: datetime | None = None,
 ) -> PreparedConversion:
     selected_accounts = _select_accounts(plan, selected_account_aliases)
+    if rebuild_balance and not any(a.track_local_balance for a in selected_accounts):
+        raise UserInputError(
+            "--rebuild-balance requires at least one account in scope with "
+            "track_local_balance: true."
+        )
     bindings = resolve_bindings(plan, gateway)
-    sync_request = _build_sync_request(
-        plan_state_for(state, plan.alias),
-        bootstrap_since=bootstrap_since,
-        prompt_for_start_date=prompt_for_start_date,
-    )
+    if rebuild_balance:
+        sync_request = SyncRequest(
+            last_knowledge_of_server=None,
+            since_date=None,
+            used_bootstrap=True,
+        )
+    else:
+        sync_request = _build_sync_request(
+            plan_state_for(state, plan.alias),
+            bootstrap_since=bootstrap_since,
+            prompt_for_start_date=prompt_for_start_date,
+        )
     queried_account_ids = tuple(
         bindings.account_ids[account.alias] for account in selected_accounts
     )
@@ -124,6 +160,16 @@ def build_prepared_conversion(
     skipped: list[SkippedTransaction] = []
     candidate_items: list[tuple[AccountConfig, RemoteTransaction]] = []
     for account, transaction in fetched_items:
+        if is_sentinel_payee(transaction.payee_name):
+            skipped.append(
+                SkippedTransaction(
+                    transaction_id=transaction.id,
+                    date=transaction.date,
+                    account_alias=account.alias,
+                    reason="sentinel",
+                )
+            )
+            continue
         skip_reason = _summary_skip_reason(transaction)
         if skip_reason is None:
             candidate_items.append((account, transaction))
@@ -156,6 +202,20 @@ def build_prepared_conversion(
 
         updates.append(_prepare_update(plan, account, detail))
 
+    split_skipped_ids = {
+        entry.transaction_id for entry in skipped if entry.reason == "split"
+    }
+    tracking = _build_tracking_updates(
+        plan=plan,
+        bindings=bindings,
+        selected_accounts=selected_accounts,
+        fetched_items=fetched_items,
+        split_skipped_ids=split_skipped_ids,
+        rebuild=rebuild_balance,
+        now_utc=now_utc or datetime.now(UTC),
+        prompt_for_transfer_direction=prompt_for_transfer_direction,
+    )
+
     return PreparedConversion(
         bindings=bindings,
         sync_request=sync_request,
@@ -164,6 +224,8 @@ def build_prepared_conversion(
         fetched_server_knowledge=fetched_server_knowledge,
         updates=tuple(updates),
         skipped=tuple(skipped),
+        tracking=tracking,
+        rebuild_balance=rebuild_balance,
     )
 
 
@@ -186,8 +248,14 @@ def execute_conversion(
     for requests in _group_update_requests_by_account(prepared.updates).values():
         gateway.update_transactions(prepared.bindings.plan_id, requests)
 
+    sentinel_writes, sentinels_created = _apply_tracking_writes(
+        gateway=gateway,
+        plan_id=prepared.bindings.plan_id,
+        tracking=prepared.tracking,
+    )
+
     saved_server_knowledge = prepared.fetched_server_knowledge
-    if prepared.updates:
+    if prepared.updates or sentinel_writes:
         saved_server_knowledge = _refresh_server_knowledge_for_accounts(
             gateway=gateway,
             plan_id=prepared.bindings.plan_id,
@@ -209,7 +277,72 @@ def execute_conversion(
         writes_performed=len(prepared.updates),
         saved_server_knowledge=saved_server_knowledge,
         new_state=next_state,
+        sentinel_writes=sentinel_writes,
+        sentinels_created=sentinels_created,
     )
+
+
+def _build_tracking_updates(
+    *,
+    plan: PlanConfig,
+    bindings: ResolvedBindings,
+    selected_accounts: tuple[AccountConfig, ...],
+    fetched_items: Sequence[tuple[AccountConfig, RemoteTransaction]],
+    split_skipped_ids: set[str],
+    rebuild: bool,
+    now_utc: datetime,
+    prompt_for_transfer_direction: TransferDirectionPrompt | None,
+) -> tuple[PreparedTrackingUpdate, ...]:
+    tracked_accounts = [a for a in selected_accounts if a.track_local_balance]
+    if not tracked_accounts:
+        return ()
+
+    grouped: dict[str, list[RemoteTransaction]] = defaultdict(list)
+    for account, transaction in fetched_items:
+        grouped[account.alias].append(transaction)
+
+    prepared: list[PreparedTrackingUpdate] = []
+    for account in tracked_accounts:
+        account_id = bindings.account_ids[account.alias]
+        remote_account = bindings.remote_accounts_by_alias.get(account.alias)
+        if remote_account is None:
+            raise ApiError(
+                f"Missing remote account snapshot for tracked account {account.alias!r}."
+            )
+        prepared.append(
+            build_tracking_update(
+                plan=plan,
+                account=account,
+                account_id=account_id,
+                remote_account=remote_account,
+                transactions=grouped.get(account.alias, []),
+                split_skipped_ids=split_skipped_ids,
+                rebuild=rebuild,
+                now_utc=now_utc,
+                prompt_for_transfer_direction=prompt_for_transfer_direction,
+            )
+        )
+    return tuple(prepared)
+
+
+def _apply_tracking_writes(
+    *,
+    gateway: YnabGateway,
+    plan_id: str,
+    tracking: Sequence[PreparedTrackingUpdate],
+) -> tuple[int, int]:
+    total_writes = 0
+    created = 0
+    for entry in tracking:
+        if entry.create_sentinel is not None:
+            gateway.create_transaction(plan_id, entry.create_sentinel)
+            total_writes += 1
+            created += 1
+            continue
+        if entry.update_sentinel is not None:
+            gateway.update_transaction(plan_id, entry.update_sentinel)
+            total_writes += 1
+    return total_writes, created
 
 
 def _select_accounts(

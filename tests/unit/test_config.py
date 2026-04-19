@@ -413,3 +413,91 @@ fx_rates:
     )
     with pytest.raises(ConfigError, match="must be a decimal value greater than 1"):
         load_config(path)
+
+
+def test_load_config_accepts_track_local_balance_toggle(tmp_path: Path) -> None:
+    path = _write_config(
+        tmp_path,
+        """version: 1
+plan:
+  alias: personal
+  name: Example Plan
+  base_currency: USD
+accounts:
+  hkd_wallet:
+    name: HKD Wallet
+    currency: HKD
+    enabled: true
+    track_local_balance: true
+  gbp_wallet:
+    name: GBP Wallet
+    currency: GBP
+    enabled: true
+fx_rates:
+  HKD:
+    rate: "7.8"
+    divide_to_base: true
+  GBP:
+    rate: "1.35"
+    divide_to_base: false
+""",
+    )
+
+    config = load_config(path)
+
+    by_alias = {account.alias: account for account in config.plan.accounts}
+    assert by_alias["hkd_wallet"].track_local_balance is True
+    assert by_alias["gbp_wallet"].track_local_balance is False
+
+
+def test_load_config_rejects_track_local_balance_on_base_currency_account(
+    tmp_path: Path,
+) -> None:
+    path = _write_config(
+        tmp_path,
+        """version: 1
+plan:
+  alias: personal
+  name: Example Plan
+  base_currency: USD
+accounts:
+  hkd_wallet:
+    name: HKD Wallet
+    currency: HKD
+    enabled: true
+  usd_checking:
+    name: USD Checking
+    currency: USD
+    enabled: false
+    track_local_balance: true
+fx_rates:
+  HKD:
+    rate: "7.8"
+    divide_to_base: true
+""",
+    )
+
+    with pytest.raises(
+        ConfigError, match="track_local_balance is only valid for foreign-currency"
+    ):
+        load_config(path)
+
+
+def test_load_config_rejects_non_bool_track_local_balance(tmp_path: Path) -> None:
+    path = _write_config(
+        tmp_path,
+        _VALID_CONFIG_HEAD
+        + """  travel_hkd:
+    name: Travel HKD
+    currency: HKD
+    enabled: true
+    track_local_balance: "yes"
+fx_rates:
+  HKD:
+    rate: "7.8"
+    divide_to_base: true
+""",
+    )
+
+    with pytest.raises(ConfigError, match="track_local_balance must be true or false"):
+        load_config(path)
