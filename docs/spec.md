@@ -53,7 +53,7 @@ Lists visible YNAB budgets and open accounts to help the user fill in the config
 
 Closed and deleted accounts are not shown.
 
-### 3.4 `ymca convert [--account ALIAS]... [--apply] [--bootstrap-since YYYY-MM-DD]`
+### 3.4 `ymca sync [--account ALIAS]... [--apply] [--bootstrap-since YYYY-MM-DD]`
 
 - dry-run by default
 - writes only when `--apply` is present
@@ -70,11 +70,11 @@ Path handling is intentionally split between config-management commands and runt
 
 `ymca config init --path ...` and `ymca config check --path ...` operate on the explicit path supplied by the user.
 
-They do not change the runtime config path used by later `discover` or `convert` commands.
+They do not change the runtime config path used by later `discover` or `sync` commands.
 
 ### 4.2 Runtime Commands
 
-`ymca discover` and `ymca convert` resolve the config path in this order:
+`ymca discover` and `ymca sync` resolve the config path in this order:
 
 1. `YMCA_CONFIG_PATH`
 2. `~/.config/ymca/config.yaml`

@@ -1,9 +1,9 @@
 """Live-API coverage for workflows W6 and W7.
 
-* ``ymca convert --bootstrap-since``: asserts the prepared conversion's
+* ``ymca sync --bootstrap-since``: asserts the prepared conversion's
   :class:`SyncRequest` reflects the bootstrap override (``used_bootstrap=True``,
   no ``last_knowledge_of_server``).
-* ``ymca convert --account``: asserts only the selected account ids show up
+* ``ymca sync --account``: asserts only the selected account ids show up
   in :attr:`PreparedConversion.queried_account_ids`.
 
 Both tests do dry-runs only (no writes, no cleanup per-test cost beyond the
@@ -31,7 +31,7 @@ def _prompt_never_called() -> date:
 
 
 @pytest.mark.integration
-def test_convert_bootstrap_since_overrides_saved_state(
+def test_sync_bootstrap_since_overrides_saved_state(
     integration_env: IntegrationEnvironment,
 ) -> None:
     account_plan = resolve_integration_accounts(integration_env.accounts)
@@ -53,7 +53,7 @@ def test_convert_bootstrap_since_overrides_saved_state(
 
 
 @pytest.mark.integration
-def test_convert_account_filter_limits_queried_accounts(
+def test_sync_account_filter_limits_queried_accounts(
     integration_env: IntegrationEnvironment,
 ) -> None:
     account_plan = resolve_integration_accounts(integration_env.accounts)

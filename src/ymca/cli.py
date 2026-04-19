@@ -37,8 +37,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _handle_config_check(path=args.path)
     if args.command == "discover":
         return _handle_discover()
-    if args.command == "convert":
-        return _handle_convert(
+    if args.command == "sync":
+        return _handle_sync(
             account_aliases=tuple(args.account),
             apply_updates=args.apply,
             bootstrap_since=args.bootstrap_since,
@@ -69,7 +69,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=default_config_path(),
         help=(
             "Write the template to this path. This does not change the runtime path used by "
-            "discover or convert."
+            "discover or sync."
         ),
     )
     config_init_parser.add_argument(
@@ -88,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=default_config_path(),
         help=(
             "Validate this config file. This does not change the runtime path used by "
-            "discover or convert."
+            "discover or sync."
         ),
     )
 
@@ -97,21 +97,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="List visible YNAB plans and open account names from the runtime config path.",
     )
 
-    convert_parser = subparsers.add_parser("convert", help="Convert matching YNAB transactions.")
-    convert_parser.add_argument(
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Sync YNAB: convert foreign-currency transactions to the base currency.",
+    )
+    sync_parser.add_argument(
         "--account",
         action="append",
         default=[],
         help=(
-            "Limit conversion to one configured account alias. Repeat to include multiple accounts."
+            "Limit the sync to one configured account alias. Repeat to include multiple accounts."
         ),
     )
-    convert_parser.add_argument(
+    sync_parser.add_argument(
         "--apply",
         action="store_true",
         help="Write converted amounts and FX memos back to YNAB.",
     )
-    convert_parser.add_argument(
+    sync_parser.add_argument(
         "--bootstrap-since",
         type=_parse_date_argument,
         help="Sync from this date and ignore saved server knowledge for the current run.",
@@ -125,7 +128,7 @@ def _handle_config_init(*, path: Path, force: bool) -> int:
     print(f"Wrote config template to {path}")
     if path != default_config_path():
         print(
-            "Note: discover and convert still use YMCA_CONFIG_PATH or the default config path "
+            "Note: discover and sync still use YMCA_CONFIG_PATH or the default config path "
             "unless you set YMCA_CONFIG_PATH."
         )
     return 0
@@ -151,7 +154,7 @@ def _handle_config_check(*, path: Path) -> int:
 
     if path != default_config_path():
         print(
-            "Note: discover and convert still use YMCA_CONFIG_PATH or the default config path "
+            "Note: discover and sync still use YMCA_CONFIG_PATH or the default config path "
             "unless you set YMCA_CONFIG_PATH."
         )
 
@@ -184,7 +187,7 @@ def _handle_discover() -> int:
     return 0
 
 
-def _handle_convert(
+def _handle_sync(
     *,
     account_aliases: tuple[str, ...],
     apply_updates: bool,

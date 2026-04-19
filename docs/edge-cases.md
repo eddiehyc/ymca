@@ -16,28 +16,28 @@ The "Required by AGENTS.md" section covers the edge cases explicitly called out 
 A transaction with amount `0` must not be skipped; the FX marker is still appended (`0 <CCY>`), and the uploaded amount remains `0` regardless of the configured rate.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_keeps_zero_amount_transactions`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — seed includes a zero-amount transaction on a foreign account.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes a zero-amount transaction on a foreign account.
 
 ### E2. Transfer transactions
 
 A transfer pair (one "out" side in the source account, one "in" side in the target account) must be converted **once**, not twice. The surviving side uses a `+/-` literal prefix in the memo. Processing must not depend on the order accounts are fetched.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_processes_transfer_once_with_plus_minus_prefix`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — seed includes an HKD↔GBP transfer pair; post-apply state asserts only one side is rewritten.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes an HKD↔GBP transfer pair; post-apply state asserts only one side is rewritten.
 
 ### E3. Transactions with split categories
 
-Transactions whose `subtransaction_count > 0` are skipped by the main `convert` path. (The legacy migration helper handles split parents specifically; see E9.)
+Transactions whose `subtransaction_count > 0` are skipped by the main `sync` path. (The legacy migration helper handles split parents specifically; see E9.)
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_skips_deleted_and_split_transactions`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — seed includes a split transaction; integration asserts the main converter produced `skipped(reason="split")` and the YNAB record is untouched.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes a split transaction; integration asserts the main converter produced `skipped(reason="split")` and the YNAB record is untouched.
 
 ### E4. Transfer transactions with split categories
 
 A split on the outflow leg of a transfer is still skipped by the main converter (split rule wins over transfer handling), and the corresponding inflow leg in the paired account is also left untouched. This combines E2 and E3.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_split_transfer_is_skipped_not_converted`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — seed includes a transfer pair where one side is split into subtransactions; post-apply asserts neither leg was modified.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes a transfer pair where one side is split into subtransactions; post-apply asserts neither leg was modified.
 
 ## Additional edge cases discovered in the codebase
 
@@ -46,14 +46,14 @@ A split on the outflow leg of a transfer is still skipped by the main converter 
 Skipped with reason `already-converted`; the amount is not double-converted.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_uses_milliunit_precision_and_skips_marked_transactions`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py).
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py).
 
 ### E6. Transaction carrying the legacy `(FX rate: ...)` marker
 
 Skipped by the main CLI with reason `legacy-marker`; handled only by the migration helper.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_skips_legacy_marked_transactions`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — verifies the main CLI skips legacy-marked rows in live YNAB data.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — verifies the main CLI skips legacy-marked rows in live YNAB data.
 
 ### E7. Deleted transactions
 
@@ -67,21 +67,21 @@ Transactions with `deleted: true` are skipped. They must not contribute to `writ
 YNAB amounts are milliunits; rounding happens at milliunit precision, not cent precision. `12340` at `7.8 HKD/USD` uploads `1582`, not `1580`.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — asserts `converted_amount_milliunits == 1582` in the HKD tests.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — HKD seed uses an amount sensitive to milliunit rounding, asserts the post-apply amount matches.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — HKD seed uses an amount sensitive to milliunit rounding, asserts the post-apply amount matches.
 
 ### E9. Multiply FX path (`divide_to_base: false`, GBP)
 
 For GBP with `divide_to_base: false`, `base = source * rate`. Conversion math and memo pair label (`USD/GBP`) must reflect this direction.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_multiply_path_when_divide_false`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — GBP seed covers this direction.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — GBP seed covers this direction.
 
 ### E10. Long-rate memo rounding
 
 The `rate_text` embedded in new `[FX]` memos is rounded to three decimal places (`ROUND_HALF_UP`) and normalized (trailing zeros trimmed), even when the configured `rate` has more precision. Conversion math still uses full precision.
 
 - Unit: [`tests/unit/test_config.py`](../tests/unit/test_config.py) — `test_parse_rate_rounds_to_three_decimal_places`.
-- Integration: [`tests/integration/test_convert_dry_run.py`](../tests/integration/test_convert_dry_run.py) — uses a four-decimal rate and asserts the memo shows three places.
+- Integration: [`tests/integration/test_sync_dry_run.py`](../tests/integration/test_sync_dry_run.py) — uses a four-decimal rate and asserts the memo shows three places.
 
 ### E11. Double-converted transactions (legacy repair pattern)
 

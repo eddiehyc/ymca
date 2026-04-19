@@ -28,33 +28,33 @@ List visible YNAB plans and their open accounts. Closed and deleted accounts are
 - Unit: [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — `test_discover_hides_closed_accounts`, `test_discover_reports_when_no_plans_are_returned`, `test_discover_reports_when_plan_has_no_accounts`.
 - Integration: [`tests/integration/test_discover_workflow.py`](../tests/integration/test_discover_workflow.py).
 
-## W4. `ymca convert` (dry run)
+## W4. `ymca sync` (dry run)
 
 Build the set of planned transaction updates without writing anything back. State file is not updated.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — multiple coverage tests including `test_execute_conversion_dry_run_returns_without_writing`.
-- Integration: [`tests/integration/test_convert_dry_run.py`](../tests/integration/test_convert_dry_run.py) — builds a `PreparedConversion` against the live seed; asserts no writes occurred.
+- Integration: [`tests/integration/test_sync_dry_run.py`](../tests/integration/test_sync_dry_run.py) — builds a `PreparedConversion` against the live seed; asserts no writes occurred.
 
-## W5. `ymca convert --apply`
+## W5. `ymca sync --apply`
 
 Persist converted amounts and memos to YNAB. Also saves refreshed `server_knowledge` to local state on success.
 
-- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_execute_conversion_saves_follow_up_server_knowledge`, `test_execute_conversion_batches_writes_per_account`; [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — `test_convert_apply_updates_state_file`.
-- Integration: [`tests/integration/test_convert_apply.py`](../tests/integration/test_convert_apply.py) — executes against the live test plan, verifies transactions are actually modified in YNAB.
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_execute_conversion_saves_follow_up_server_knowledge`, `test_execute_conversion_batches_writes_per_account`; [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — `test_sync_apply_updates_state_file`.
+- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — executes against the live test plan, verifies transactions are actually modified in YNAB.
 
-## W6. `ymca convert --bootstrap-since YYYY-MM-DD`
+## W6. `ymca sync --bootstrap-since YYYY-MM-DD`
 
 Force the run to ignore saved `server_knowledge` and sync transactions from the given date.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_bootstrap_since_overrides_saved_server_knowledge`; [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — `test_parse_date_argument_rejects_invalid_iso_date`, `test_parse_date_argument_accepts_iso_date`, `test_prompt_for_start_date_retries_until_valid_input`.
-- Integration: [`tests/integration/test_convert_bootstrap_and_filter.py`](../tests/integration/test_convert_bootstrap_and_filter.py).
+- Integration: [`tests/integration/test_sync_bootstrap_and_filter.py`](../tests/integration/test_sync_bootstrap_and_filter.py).
 
-## W7. `ymca convert --account ALIAS`
+## W7. `ymca sync --account ALIAS`
 
-Limit conversion to one or more configured account aliases. Unknown or disabled aliases raise `UserInputError`.
+Limit the sync to one or more configured account aliases. Unknown or disabled aliases raise `UserInputError`.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_raises_for_unknown_account_alias`.
-- Integration: [`tests/integration/test_convert_bootstrap_and_filter.py`](../tests/integration/test_convert_bootstrap_and_filter.py).
+- Integration: [`tests/integration/test_sync_bootstrap_and_filter.py`](../tests/integration/test_sync_bootstrap_and_filter.py).
 
 ## W8. Legacy memo migration (deprecated helper)
 

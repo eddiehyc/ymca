@@ -63,13 +63,13 @@ uv run ymca discover
 6. Run a dry conversion preview:
 
 ```bash
-uv run ymca convert
+uv run ymca sync
 ```
 
 7. Apply the updates once the preview looks right:
 
 ```bash
-uv run ymca convert --apply
+uv run ymca sync --apply
 ```
 
 ## Config File
@@ -128,7 +128,7 @@ YMCA has two different path behaviors, which is the main thing to keep in mind w
 
 `ymca config init --path ...` and `ymca config check --path ...` operate on the specific file path you give them.
 
-`ymca discover` and `ymca convert` do not take a config `--path` flag. They use the runtime path resolution below:
+`ymca discover` and `ymca sync` do not take a config `--path` flag. They use the runtime path resolution below:
 
 - `YMCA_CONFIG_PATH`, if set
 - otherwise `~/.config/ymca/config.yaml`
@@ -148,7 +148,7 @@ Examples:
 
 ```bash
 YMCA_CONFIG_PATH=~/work/ymca/config.yaml uv run ymca discover
-YMCA_CONFIG_PATH=~/work/ymca/config.yaml YMCA_STATE_PATH=~/work/ymca/state.yaml uv run ymca convert --apply
+YMCA_CONFIG_PATH=~/work/ymca/config.yaml YMCA_STATE_PATH=~/work/ymca/state.yaml uv run ymca sync --apply
 uv run ymca config check --path ~/work/ymca/config.yaml
 ```
 
@@ -168,28 +168,28 @@ Check config and credentials:
 uv run ymca config check
 ```
 
-Dry-run conversion:
+Dry-run sync:
 
 ```bash
-uv run ymca convert
+uv run ymca sync
 ```
 
-Apply conversion:
+Apply sync:
 
 ```bash
-uv run ymca convert --apply
+uv run ymca sync --apply
 ```
 
-Limit conversion to one or more configured account aliases:
+Limit the sync to one or more configured account aliases:
 
 ```bash
-uv run ymca convert --account hsbc_hk_hkd --account hsbc_uk_gbp
+uv run ymca sync --account hsbc_hk_hkd --account hsbc_uk_gbp
 ```
 
 Bootstrap from a specific date:
 
 ```bash
-uv run ymca convert --bootstrap-since 2025-01-01
+uv run ymca sync --bootstrap-since 2025-01-01
 ```
 
 If you pass `--bootstrap-since`, it takes precedence for that run and ignores saved `server_knowledge`.
@@ -207,7 +207,7 @@ State stores:
 - resolved YNAB budget and account IDs
 - the last saved `server_knowledge` per configured plan alias
 
-Normal `convert` runs use saved `server_knowledge` when present. On a first run with no saved knowledge, YMCA asks for a bootstrap start date unless you provide `--bootstrap-since`.
+Normal `sync` runs use saved `server_knowledge` when present. On a first run with no saved knowledge, YMCA asks for a bootstrap start date unless you provide `--bootstrap-since`.
 
 Dry runs do not save state. Successful `--apply` runs do save state.
 

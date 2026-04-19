@@ -97,7 +97,7 @@ fx_rates:
     assert "Account travel_hkd: OK" in captured.out
 
 
-def test_convert_apply_updates_state_file(
+def test_sync_apply_updates_state_file(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
@@ -178,7 +178,7 @@ fx_rates:
     )
     monkeypatch.setattr("ymca.cli.YnabClient", lambda api_key: FakeGatewayContext(gateway))
 
-    exit_code = main(["convert", "--apply", "--bootstrap-since", "2026-04-01"])
+    exit_code = main(["sync", "--apply", "--bootstrap-since", "2026-04-01"])
     captured = capsys.readouterr()
 
     assert exit_code == 0
