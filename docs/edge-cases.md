@@ -209,5 +209,11 @@ The sentinel is identified by exact payee-name match against `[YMCA] Tracked Bal
 - is upserted (created on first enablement, updated thereafter) at the end of each sync run for every tracked account in scope,
 - carries a green `flag_color`, re-applied on every write so a hand-cleared flag in the YNAB UI gets restored automatically on the next run.
 
-- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_sentinel_create_and_update_carry_the_green_flag` plus the adapter's `test_ynab_client_create_transaction_forwards_flag_color_when_set` / `test_ynab_client_update_transaction_forwards_flag_color_when_set`.
+The sentinel's YNAB transaction id is persisted in `state.yaml` under `plans.<alias>.sentinel_ids.<account_alias>` so that quiet delta runs (where `server_knowledge` already advanced past the last sentinel write, and the delta therefore returns nothing) can still find and update the existing sentinel via `get_transaction_detail`. Without this direct lookup, a scan-only strategy would miss the sentinel on the next `ymca sync` after a successful apply and create a duplicate.
+
+### E29. Sentinel deleted or re-tagged by user
+
+If the saved `sentinel_id` points at a transaction that YNAB reports as `deleted=true`, or whose payee has been renamed off `[YMCA] Tracked Balance`, the sync treats the sentinel as missing and queues a fresh `create_transaction`. The new id is then persisted in `state.yaml`, overwriting the stale one.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_sentinel_create_and_update_carry_the_green_flag` plus the adapter's `test_ynab_client_create_transaction_forwards_flag_color_when_set` / `test_ynab_client_update_transaction_forwards_flag_color_when_set`; [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_fetches_saved_sentinel_when_delta_is_empty`, `test_build_prepared_conversion_recreates_sentinel_when_user_deletes_it`, `test_execute_conversion_persists_new_sentinel_ids_in_state`.
 - Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py).

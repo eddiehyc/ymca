@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Protocol
@@ -205,6 +205,10 @@ def build_prepared_conversion(
     split_skipped_ids = {
         entry.transaction_id for entry in skipped if entry.reason == "split"
     }
+    prior_plan_state = plan_state_for(state, plan.alias)
+    saved_sentinel_ids: Mapping[str, str] = (
+        dict(prior_plan_state.sentinel_ids) if prior_plan_state is not None else {}
+    )
     tracking = _build_tracking_updates(
         plan=plan,
         bindings=bindings,
@@ -214,6 +218,8 @@ def build_prepared_conversion(
         rebuild=rebuild_balance,
         now_utc=now_utc or datetime.now(UTC),
         prompt_for_transfer_direction=prompt_for_transfer_direction,
+        gateway=gateway,
+        saved_sentinel_ids=saved_sentinel_ids,
     )
 
     return PreparedConversion(
@@ -248,7 +254,7 @@ def execute_conversion(
     for requests in _group_update_requests_by_account(prepared.updates).values():
         gateway.update_transactions(prepared.bindings.plan_id, requests)
 
-    sentinel_writes, sentinels_created = _apply_tracking_writes(
+    sentinel_writes, sentinels_created, written_sentinel_ids = _apply_tracking_writes(
         gateway=gateway,
         plan_id=prepared.bindings.plan_id,
         tracking=prepared.tracking,
@@ -263,12 +269,21 @@ def execute_conversion(
             last_knowledge_of_server=prepared.fetched_server_knowledge,
         )
 
+    # Merge the freshly-written sentinel ids on top of the ids we had saved
+    # for this plan, so untouched tracked accounts retain their stored id.
+    prior_plan_state = plan_state_for(state, prepared.bindings.plan.alias)
+    merged_sentinel_ids: dict[str, str] = (
+        dict(prior_plan_state.sentinel_ids) if prior_plan_state is not None else {}
+    )
+    merged_sentinel_ids.update(written_sentinel_ids)
+
     next_state = upsert_plan_state(
         state,
         alias=prepared.bindings.plan.alias,
         plan_id=prepared.bindings.plan_id,
         account_ids=prepared.bindings.account_ids,
         server_knowledge=saved_server_knowledge,
+        sentinel_ids=merged_sentinel_ids,
     )
 
     return ConversionOutcome(
@@ -292,6 +307,8 @@ def _build_tracking_updates(
     rebuild: bool,
     now_utc: datetime,
     prompt_for_transfer_direction: TransferDirectionPrompt | None,
+    gateway: YnabGateway,
+    saved_sentinel_ids: Mapping[str, str],
 ) -> tuple[PreparedTrackingUpdate, ...]:
     tracked_accounts = [a for a in selected_accounts if a.track_local_balance]
     if not tracked_accounts:
@@ -309,13 +326,28 @@ def _build_tracking_updates(
             raise ApiError(
                 f"Missing remote account snapshot for tracked account {account.alias!r}."
             )
+
+        transactions = list(grouped.get(account.alias, []))
+        saved_id = saved_sentinel_ids.get(account.alias)
+        if saved_id is not None and not any(t.id == saved_id for t in transactions):
+            # The sentinel only appears in the delta when WE just changed it.
+            # On a quiet run the delta is empty and scanning ``transactions``
+            # would miss a sentinel that already exists in YNAB. Fetch it
+            # directly so ``build_tracking_update`` can pick it up as the
+            # prior state.
+            fetched_sentinel = _fetch_saved_sentinel(
+                gateway=gateway, plan_id=bindings.plan_id, sentinel_id=saved_id
+            )
+            if fetched_sentinel is not None:
+                transactions.append(fetched_sentinel)
+
         prepared.append(
             build_tracking_update(
                 plan=plan,
                 account=account,
                 account_id=account_id,
                 remote_account=remote_account,
-                transactions=grouped.get(account.alias, []),
+                transactions=transactions,
                 split_skipped_ids=split_skipped_ids,
                 rebuild=rebuild,
                 now_utc=now_utc,
@@ -325,24 +357,59 @@ def _build_tracking_updates(
     return tuple(prepared)
 
 
+def _fetch_saved_sentinel(
+    *, gateway: YnabGateway, plan_id: str, sentinel_id: str
+) -> RemoteTransaction | None:
+    """Fetch a previously-known sentinel transaction by id.
+
+    Returns ``None`` when the sentinel has been deleted, re-tagged with a
+    different payee, or otherwise can no longer be found. In that case
+    ``build_tracking_update`` falls through to creating a fresh sentinel.
+    """
+    try:
+        detail = gateway.get_transaction_detail(plan_id, sentinel_id)
+    except ApiError:
+        return None
+    if detail.deleted:
+        return None
+    if not is_sentinel_payee(detail.payee_name):
+        return None
+    return RemoteTransaction(
+        id=detail.id,
+        date=detail.date,
+        amount_milliunits=detail.amount_milliunits,
+        memo=detail.memo,
+        account_id=detail.account_id,
+        transfer_account_id=detail.transfer_account_id,
+        transfer_transaction_id=detail.transfer_transaction_id,
+        deleted=detail.deleted,
+        payee_name=detail.payee_name,
+        cleared=detail.cleared,
+    )
+
+
 def _apply_tracking_writes(
     *,
     gateway: YnabGateway,
     plan_id: str,
     tracking: Sequence[PreparedTrackingUpdate],
-) -> tuple[int, int]:
+) -> tuple[int, int, dict[str, str]]:
+    """Apply sentinel create/update calls and return captured ids by alias."""
     total_writes = 0
     created = 0
+    new_ids: dict[str, str] = {}
     for entry in tracking:
         if entry.create_sentinel is not None:
-            gateway.create_transaction(plan_id, entry.create_sentinel)
+            new_id = gateway.create_transaction(plan_id, entry.create_sentinel)
+            new_ids[entry.account_alias] = new_id
             total_writes += 1
             created += 1
             continue
         if entry.update_sentinel is not None:
             gateway.update_transaction(plan_id, entry.update_sentinel)
+            new_ids[entry.account_alias] = entry.update_sentinel.transaction_id
             total_writes += 1
-    return total_writes, created
+    return total_writes, created, new_ids
 
 
 def _select_accounts(

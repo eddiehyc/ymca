@@ -1378,3 +1378,217 @@ def test_build_prepared_conversion_rebuild_balance_uses_full_scan() -> None:
     assert prepared.sync_request.used_bootstrap is True
     assert prepared.rebuild_balance is True
     assert prepared.tracking[0].new_balance_milliunits == 12340
+
+
+def test_build_prepared_conversion_fetches_saved_sentinel_when_delta_is_empty() -> None:
+    """Regression: a quiet delta must not lose sight of the existing sentinel.
+
+    Reproduces the user-reported bug where ``ymca sync`` on an up-to-date
+    account printed ``sentinel: create`` + full drift despite the sentinel
+    already existing in YNAB. The fix persists the sentinel id in state and
+    fetches it directly via ``get_transaction_detail`` when the delta does
+    not surface it.
+    """
+    plan = _tracked_hkd_plan()
+    sentinel_memo = (
+        "[YMCA-BAL] HKD 12,340.00 | rate 7.8 HKD/USD | "
+        "updated 2026-04-18T12:00:00Z | drift 0.00 USD"
+    )
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(
+                        id="acct-1",
+                        name="Travel HKD",
+                        deleted=False,
+                        cleared_balance_milliunits=1582,
+                    ),
+                ),
+                server_knowledge=42,
+            )
+        },
+        transaction_details={
+            "existing-sentinel": RemoteTransactionDetail(
+                id="existing-sentinel",
+                date=date(2026, 4, 18),
+                amount_milliunits=0,
+                memo=sentinel_memo,
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=0,
+                payee_name="[YMCA] Tracked Balance",
+                cleared="reconciled",
+            )
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [TransactionSnapshot(transactions=(), server_knowledge=42)]
+        },
+    )
+
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"travel_hkd": "acct-1"},
+                server_knowledge=42,
+                sentinel_ids={"travel_hkd": "existing-sentinel"},
+            )
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=None,
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert len(prepared.tracking) == 1
+    entry = prepared.tracking[0]
+    assert entry.prior_sentinel is not None
+    assert entry.prior_balance_milliunits == 12340000
+    assert entry.new_balance_milliunits == 12340000
+    assert entry.create_sentinel is None
+    assert entry.update_sentinel is not None
+    assert entry.update_sentinel.transaction_id == "existing-sentinel"
+
+
+def test_build_prepared_conversion_recreates_sentinel_when_user_deletes_it() -> None:
+    """If the saved sentinel got deleted, we detect it and queue a new create."""
+    plan = _tracked_hkd_plan()
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),
+                ),
+                server_knowledge=42,
+            )
+        },
+        transaction_details={
+            "ghost-sentinel": RemoteTransactionDetail(
+                id="ghost-sentinel",
+                date=date(2026, 4, 18),
+                amount_milliunits=0,
+                memo="stale",
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=True,  # user deleted this in YNAB
+                subtransaction_count=0,
+                payee_name="[YMCA] Tracked Balance",
+                cleared="reconciled",
+            )
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [TransactionSnapshot(transactions=(), server_knowledge=42)]
+        },
+    )
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"travel_hkd": "acct-1"},
+                server_knowledge=42,
+                sentinel_ids={"travel_hkd": "ghost-sentinel"},
+            )
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=None,
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    entry = prepared.tracking[0]
+    assert entry.prior_sentinel is None
+    assert entry.create_sentinel is not None
+    assert entry.update_sentinel is None
+
+
+def test_execute_conversion_persists_new_sentinel_ids_in_state() -> None:
+    plan = _tracked_hkd_plan()
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(
+                        id="acct-1",
+                        name="Travel HKD",
+                        deleted=False,
+                        cleared_balance_milliunits=1582,
+                    ),
+                ),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={
+            "txn-1": RemoteTransactionDetail(
+                id="txn-1",
+                date=date(2026, 4, 10),
+                amount_milliunits=12340,
+                memo=None,
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=0,
+                cleared="cleared",
+            )
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-1",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=12340,
+                            memo=None,
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                            cleared="cleared",
+                        ),
+                    ),
+                    server_knowledge=44,
+                ),
+                TransactionSnapshot(transactions=(), server_knowledge=55),
+            ]
+        },
+        create_transaction_ids=["freshly-created-sentinel"],
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+    outcome = execute_conversion(
+        prepared=prepared,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        apply_updates=True,
+    )
+
+    assert outcome.applied is True
+    personal_state = outcome.new_state.plans["personal"]
+    assert personal_state.sentinel_ids == {"travel_hkd": "freshly-created-sentinel"}

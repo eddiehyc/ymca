@@ -64,6 +64,14 @@ class PlanState:
     plan_id: str | None
     account_ids: Mapping[str, str]
     server_knowledge: int | None
+    sentinel_ids: Mapping[str, str] = field(default_factory=dict)
+    """Tracked-balance sentinel transaction ids keyed by account alias.
+
+    Persisting these lets ``ymca sync`` look the sentinel up directly with
+    ``get_transaction_detail`` on every run, which is necessary because the
+    delta sync only returns transactions that changed since the last saved
+    ``server_knowledge`` -- and the sentinel only changes when WE update it.
+    """
 
 
 @dataclass(frozen=True, slots=True)

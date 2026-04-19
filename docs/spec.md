@@ -168,6 +168,8 @@ plans:
     account_ids:
       hkd_wallet: 11111111-1111-1111-1111-111111111111
     server_knowledge: 42
+    sentinel_ids:
+      hkd_wallet: 22222222-2222-2222-2222-222222222222
 ```
 
 The state file is local-only and must not be committed.
@@ -177,6 +179,7 @@ It stores:
 - resolved YNAB budget IDs
 - resolved YNAB account IDs
 - `server_knowledge` per configured plan alias from the config file
+- `sentinel_ids` per configured plan alias: a map of tracked-account aliases to the YNAB transaction id of that account's local-currency sentinel (see §12). Omitted entirely for plans with no tracked accounts. Required so quiet delta runs can still locate the sentinel, which otherwise would not appear in the delta because `server_knowledge` already advanced past its last write.
 
 ## 6. Sync Model
 
@@ -382,7 +385,8 @@ The sentinel transaction itself is always excluded from FX conversion and from t
 For every tracked account, during a normal (non-rebuild) `ymca sync` run:
 
 1. Fetch the delta using saved `server_knowledge` (unchanged from the existing flow).
-2. For each returned transaction in the account:
+2. **Locate the prior sentinel.** If `state.yaml` has a `sentinel_ids` entry for this account, fetch that transaction directly via `get_transaction_detail` and use it as the prior state. If the lookup comes back deleted, with a different payee, or 404, treat the sentinel as missing and fall through to the next step. This direct lookup is necessary because the delta only surfaces the sentinel on the run that last touched it — on quieter subsequent runs the delta is empty and a scan-only detection would miss the existing sentinel and try to create a second one.
+3. For each returned transaction in the account:
    - **Sentinel transaction**: skip.
    - **Already carries `[FX]` or legacy `(FX rate: ...)` marker** (i.e. we have seen this row before):
      - `cleared` or `reconciled`, **not deleted** → **no-op** (assume already counted).
@@ -393,8 +397,8 @@ For every tracked account, during a normal (non-rebuild) `ymca sync` run:
      - `cleared` or `reconciled`, **not deleted** → **add** the local-currency amount to the running balance.
      - `uncleared` → FX convert only; no balance change.
      - `deleted` → skip entirely.
-3. Run the tolerance check (§12.6). Emit a warning if drift exceeds the threshold; do not block the run.
-4. Upsert the sentinel transaction so its memo reflects the new balance. First enablement creates the sentinel via `create_transaction`; subsequent runs update it via `update_transaction`.
+4. Run the tolerance check (§12.6). Emit a warning if drift exceeds the threshold; do not block the run.
+5. Upsert the sentinel transaction so its memo reflects the new balance. First enablement creates the sentinel via `create_transaction` and records the resulting id into `state.yaml`; subsequent runs update it via `update_transaction` using the id from step 2.
 
 ### 12.5 Rebuild Mode (`--rebuild-balance`)
 

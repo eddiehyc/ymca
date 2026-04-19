@@ -217,6 +217,7 @@ State stores:
 
 - resolved YNAB budget and account IDs
 - the last saved `server_knowledge` per configured plan alias
+- the YNAB transaction id of each tracked account's local-currency sentinel (`sentinel_ids` map). This is persisted on every successful `--apply` run and used on the next run to look the sentinel up directly, so a quiet delta that returns zero transactions still updates the right row.
 
 Normal `sync` runs use saved `server_knowledge` when present. On a first run with no saved knowledge, YMCA asks for a bootstrap start date unless you provide `--bootstrap-since`.
 
