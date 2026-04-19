@@ -338,23 +338,31 @@ def _resolve_marked_source_milliunits(
 
     Sign inference (per §12.7):
 
-    1. YNAB amount sign takes precedence when non-zero.
+    1. **YNAB amount sign is the ground truth** whenever the amount is
+       non-zero. Any sign embedded in the memo is discarded in favor of the
+       YNAB-side sign; this catches stale or hand-edited memos where, for
+       example, a transfer outflow ended up with a ``+`` in the FX marker.
     2. For non-transfer zero-amount rows, fall back to the sign embedded in
-       the memo.
+       the memo (there is no other signal to use).
     3. For 0-amount transfer rows with a ``+/-`` literal in the memo, the
        direction is ambiguous: record the row and delegate to ``prompt``.
     """
-    fallback_sign: int | None = None
-    if transaction.amount_milliunits > 0:
-        fallback_sign = 1
-    elif transaction.amount_milliunits < 0:
-        fallback_sign = -1
-
     has_plus_minus = memo_marker_has_transfer_prefix(transaction.memo)
     is_transfer = transaction.transfer_transaction_id is not None
 
-    # Ambiguous case: 0-amount transfer with +/- literal.
-    if fallback_sign is None and is_transfer and has_plus_minus:
+    # 1. Non-zero YNAB amount: override any memo sign with the YNAB sign.
+    if transaction.amount_milliunits != 0:
+        ynab_sign = 1 if transaction.amount_milliunits > 0 else -1
+        # Pass the YNAB sign as the fallback so ``+/-`` literals still resolve.
+        memo_amount = source_amount_milliunits_from_marker(
+            transaction.memo, fallback_sign=ynab_sign
+        )
+        if memo_amount is None:
+            return None
+        return ynab_sign * abs(memo_amount)
+
+    # 2. Zero YNAB amount, 0-amount transfer with ``+/-`` literal → ambiguous.
+    if is_transfer and has_plus_minus:
         magnitude_guess = source_amount_milliunits_from_marker(
             transaction.memo, fallback_sign=1
         )
@@ -375,8 +383,10 @@ def _resolve_marked_source_milliunits(
         sign = 1 if direction > 0 else -1
         return sign * magnitude
 
+    # 3. Zero YNAB amount, non-transfer (or transfer without a ``+/-`` literal):
+    # fall back to the sign embedded in the memo.
     return source_amount_milliunits_from_marker(
-        transaction.memo, fallback_sign=fallback_sign
+        transaction.memo, fallback_sign=None
     )
 
 

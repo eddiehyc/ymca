@@ -457,18 +457,23 @@ def build_new_transaction(
     payee_name: str | None = None,
     payee_id: str | None = None,
     subtransactions: Sequence[Any] = (),
+    cleared: str = "uncleared",
 ) -> Any:
     """Construct a ``ynab.NewTransaction`` payload for ``create_transactions``.
 
     ``subtransactions`` must be a sequence of ``ynab.SaveSubTransaction``
     instances whose amounts sum to ``amount_milliunits`` (YNAB's invariant).
+
+    ``cleared`` defaults to ``"uncleared"`` to match YNAB's default; pass
+    ``"cleared"`` or ``"reconciled"`` when a test needs to exercise tracking
+    behavior that is gated on cleared status.
     """
     kwargs: dict[str, Any] = {
         "account_id": account_id,
         "var_date": date_,
         "amount": amount_milliunits,
         "memo": memo,
-        "cleared": "uncleared",
+        "cleared": cleared,
         "approved": False,
     }
     if payee_name is not None:

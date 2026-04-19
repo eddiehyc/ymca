@@ -528,6 +528,50 @@ def test_zero_amount_transfer_rebuild_without_prompt_returns_ambiguous_and_skips
     assert result.ambiguous_transfers[0].memo_amount_milliunits == 12340
 
 
+def test_rebuild_overrides_memo_sign_with_ynab_amount_sign() -> None:
+    """Stale or hand-edited memo signs must not drive the balance.
+
+    Regression: a transfer outflow of -$417.09 with memo ``[FX] +2,919.64 RMB``
+    used to contribute ``+2,919.64`` (trusting the explicit ``+`` in the memo),
+    which inflated the account's tracked balance by double the magnitude.
+    """
+    plan = _plan()
+    # Positive-signed memo but negative (outflow) YNAB amount.
+    stale_memo_positive = _txn(
+        txn_id="stale-pos",
+        amount_milliunits=-41709,
+        memo="Transfer | [FX] +2,919.64 RMB (rate: 0.14286 USD/RMB)",
+        cleared="reconciled",
+        transfer_id="other-leg",
+    )
+    # Negative-signed memo but positive (inflow) YNAB amount (also unusual,
+    # covered for symmetry).
+    stale_memo_negative = _txn(
+        txn_id="stale-neg",
+        amount_milliunits=50590,
+        memo="[FX] -354.13 RMB (rate: 0.14286 USD/RMB)",
+        cleared="reconciled",
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[stale_memo_positive, stale_memo_negative],
+        split_skipped_ids=set(),
+        rebuild=True,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    by_id = {c.transaction_id: c for c in result.contributions}
+    # YNAB outflow overrides the ``+`` in the memo → contribution is negative.
+    assert by_id["stale-pos"].signed_source_milliunits == -2919640
+    # YNAB inflow overrides the ``-`` in the memo → contribution is positive.
+    assert by_id["stale-neg"].signed_source_milliunits == 354130
+
+
 def test_zero_amount_non_transfer_rebuild_uses_memo_sign() -> None:
     # E21: 0-amount non-transfer whose memo still carries a signed source amount.
     plan = _plan()

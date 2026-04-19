@@ -420,7 +420,7 @@ The warning is informational only. The sync run does not fail.
 
 ### 12.7 Sign Inference Rules
 
-- Default: use the sign of the YNAB transaction amount (positive = inflow, negative = outflow).
+- **Default**: use the sign of the YNAB transaction amount (positive = inflow, negative = outflow). When the YNAB amount is non-zero, its sign **overrides** any sign embedded in the memo. This protects the tracked balance from stale or hand-edited memos where, for example, a transfer outflow ended up stamped with a ``+`` in its FX marker: the YNAB-side sign still drives the contribution.
 - **Zero-amount non-transfer**: the YNAB amount is `0`; the memo-embedded local amount still carries a sign. Use the memo sign.
 - **Zero-amount transfer**: the memo shows `+/-` literal prefix and the YNAB amount is `0`. Direction is ambiguous. Under `--rebuild-balance` the CLI prompts interactively (`(i)n/(o)ut/(s)kip`). Non-TTY plus `--apply` fails fast; dry-run without a TTY surfaces the ambiguous rows in the summary and skips them. The delta-mode sync never encounters this case for a new transaction (it would be converted uncleared), but if one shows up cleared, it is treated like any other 0-amount row per §12.4 with direction coming from the memo sign.
 

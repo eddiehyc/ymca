@@ -563,6 +563,52 @@ def test_map_cleared_normalizes_enum_values() -> None:
     assert _map_cleared("cleared") == "cleared"
 
 
+def test_ynab_client_create_transaction_uses_transaction_ids_list(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """YNAB returns the created id in ``transaction_ids`` even for single-txn creates."""
+    captured: dict[str, Any] = {}
+
+    class _TransactionsApi(_FakeApi):
+        def create_transaction(self, plan_id: str, payload: Any) -> Any:
+            captured["plan_id"] = plan_id
+            captured["payload"] = payload
+            return SimpleNamespace(
+                data=SimpleNamespace(
+                    transaction_ids=["real-server-id"],
+                    transaction=None,
+                    transactions=None,
+                )
+            )
+
+    monkeypatch.setattr(
+        ynab,
+        "PostTransactionsWrapper",
+        lambda transaction: SimpleNamespace(transaction=transaction),
+    )
+    monkeypatch.setattr(ynab, "NewTransaction", lambda **_kw: SimpleNamespace(**_kw))
+    monkeypatch.setattr(ynab, "TransactionClearedStatus", lambda value: value)
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+
+    request = NewTransactionRequest(
+        account_id="00000000-0000-0000-0000-000000000001",
+        date=date(2026, 4, 19),
+        amount_milliunits=0,
+        memo="memo",
+        payee_name="payee",
+        cleared="reconciled",
+    )
+    with YnabClient("secret") as client:
+        new_id = client.create_transaction("p1", request)
+    assert new_id == "real-server-id"
+    assert captured["plan_id"] == "p1"
+
+
 def test_ynab_client_create_transaction_returns_single_id(monkeypatch: MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -571,8 +617,11 @@ def test_ynab_client_create_transaction_returns_single_id(monkeypatch: MonkeyPat
             captured["plan_id"] = plan_id
             captured["payload"] = payload
             return SimpleNamespace(
-                transaction=SimpleNamespace(id="created-1"),
-                transactions=None,
+                data=SimpleNamespace(
+                    transaction_ids=[],
+                    transaction=SimpleNamespace(id="created-1"),
+                    transactions=None,
+                )
             )
 
     monkeypatch.setattr(
@@ -620,8 +669,11 @@ def test_ynab_client_create_transaction_falls_back_to_transactions_list(
     class _TransactionsApi(_FakeApi):
         def create_transaction(self, plan_id: str, payload: Any) -> Any:
             return SimpleNamespace(
-                transaction=None,
-                transactions=[SimpleNamespace(id="batch-1")],
+                data=SimpleNamespace(
+                    transaction_ids=[],
+                    transaction=None,
+                    transactions=[SimpleNamespace(id="batch-1")],
+                )
             )
 
     monkeypatch.setattr(
@@ -696,7 +748,13 @@ def test_ynab_client_create_transaction_raises_when_response_missing_id(
 ) -> None:
     class _TransactionsApi(_FakeApi):
         def create_transaction(self, plan_id: str, payload: Any) -> Any:
-            return SimpleNamespace(transaction=None, transactions=[])
+            return SimpleNamespace(
+                data=SimpleNamespace(
+                    transaction_ids=[],
+                    transaction=None,
+                    transactions=[],
+                )
+            )
 
     monkeypatch.setattr(
         ynab,

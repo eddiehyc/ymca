@@ -152,11 +152,20 @@ class YnabClient:
         except ApiException as exc:
             raise ApiError(_format_api_exception("create transaction", exc)) from exc
 
-        transaction = getattr(response, "transaction", None)
+        # YNAB's ``SaveTransactionsResponse`` wraps the payload in ``data``.
+        data = getattr(response, "data", response)
+
+        # ``transaction_ids`` is the canonical list per the YNAB OpenAPI spec;
+        # it is populated for both single-transaction and batch creation.
+        transaction_ids = getattr(data, "transaction_ids", None) or []
+        if transaction_ids:
+            return str(transaction_ids[0])
+
+        transaction = getattr(data, "transaction", None)
         if transaction is not None and getattr(transaction, "id", None) is not None:
             return str(transaction.id)
 
-        created = getattr(response, "transactions", None) or []
+        created = getattr(data, "transactions", None) or []
         if created:
             return str(created[0].id)
         raise ApiError("Create transaction response did not include a transaction id.")
