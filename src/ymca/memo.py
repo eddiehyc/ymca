@@ -29,6 +29,15 @@ LEGACY_FX_MARKER_RE = re.compile(
 )
 
 SENTINEL_PAYEE_NAME = "[YMCA] Tracked Balance"
+SENTINEL_FLAG_COLOR = "green"
+"""YNAB flag color applied to every sentinel transaction.
+
+Green was chosen for two reasons: (1) the flag makes the sentinel row visually
+distinctive in the YNAB register so users can spot it at a glance, and
+(2) applying the same color on every sync makes the flag stable as a recovery
+hint if a user accidentally clears it by hand.
+"""
+
 _SENTINEL_ISO_PATTERN = r"[0-9T:\-Z.+]+"
 _SENTINEL_PATTERN = (
     r"^\[YMCA-BAL\]\s+"

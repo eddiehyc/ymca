@@ -359,6 +359,7 @@ accounts:
 - **Payee name**: `[YMCA] Tracked Balance` (constant; used as the detection key).
 - **Amount**: `0` milliunits.
 - **Cleared status**: `reconciled` (keeps it out of the "needs clearing" UI bucket).
+- **Flag color**: `green`. Makes the sentinel visually distinct in the YNAB register and is re-applied on every sync run, so a hand-cleared flag is restored automatically on the next run.
 - **Date**: the date of the last update in the account's local timezone.
 - **Memo** (single-line, pipe-separated):
 

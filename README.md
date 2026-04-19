@@ -241,6 +241,7 @@ Why a sentinel transaction? The YNAB public API does not expose an "update accou
 
 - Payee: `[YMCA] Tracked Balance`
 - Cleared status: `reconciled` (to keep it out of the "needs clearing" bucket in the YNAB UI)
+- Flag color: `green` (makes it easy to spot in the register; re-applied on every run so a hand-cleared flag is restored automatically)
 - Amount: `0` (so it doesn't affect YNAB's cleared balance)
 - Memo: `[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | updated 2026-04-19T14:30:45Z | prev 1,200.00 2026-04-18T14:30:45Z | drift 0.00 USD`
 

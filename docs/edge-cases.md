@@ -206,7 +206,8 @@ The sentinel is identified by exact payee-name match against `[YMCA] Tracked Bal
 
 - is never FX-converted,
 - is never counted towards the tracked balance,
-- is upserted (created on first enablement, updated thereafter) at the end of each sync run for every tracked account in scope.
+- is upserted (created on first enablement, updated thereafter) at the end of each sync run for every tracked account in scope,
+- carries a green `flag_color`, re-applied on every write so a hand-cleared flag in the YNAB UI gets restored automatically on the next run.
 
-- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_sentinel_create_and_update_carry_the_green_flag` plus the adapter's `test_ynab_client_create_transaction_forwards_flag_color_when_set` / `test_ynab_client_update_transaction_forwards_flag_color_when_set`.
 - Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py).

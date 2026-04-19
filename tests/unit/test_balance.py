@@ -20,7 +20,7 @@ from ymca.balance import (
     snapshot_sentinel,
     within_tolerance,
 )
-from ymca.memo import SENTINEL_PAYEE_NAME, build_sentinel_memo
+from ymca.memo import SENTINEL_FLAG_COLOR, SENTINEL_PAYEE_NAME, build_sentinel_memo
 from ymca.models import (
     AccountConfig,
     FxRule,
@@ -214,8 +214,63 @@ def test_build_tracking_update_adds_new_cleared_transaction() -> None:
     assert len(result.contributions) == 1
     assert result.contributions[0].reason == "new-cleared"
     assert result.create_sentinel is not None
+    assert result.create_sentinel.flag_color == SENTINEL_FLAG_COLOR
     assert result.update_sentinel is None
     assert result.within_tolerance is True
+
+
+def test_sentinel_create_and_update_carry_the_green_flag() -> None:
+    """Every sentinel write re-applies the flag so hand-cleared flags are restored."""
+    plan = _plan()
+
+    # First run: no prior sentinel → create request carries the flag.
+    create_result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[_txn(txn_id="t1", amount_milliunits=5000, cleared="cleared")],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+    assert create_result.create_sentinel is not None
+    assert create_result.create_sentinel.flag_color == "green"
+    assert create_result.update_sentinel is None
+
+    # Second run: prior sentinel exists → update request also carries the flag.
+    sentinel_memo = build_sentinel_memo(
+        currency="HKD",
+        balance_milliunits=5000,
+        rate_text="7.8",
+        pair_label="HKD/USD",
+        updated_at=_PRIOR,
+        drift_milliunits_stronger=0,
+        stronger_currency="USD",
+    )
+    update_result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[
+            _txn(
+                txn_id="sentinel",
+                amount_milliunits=0,
+                memo=sentinel_memo,
+                payee_name=SENTINEL_PAYEE_NAME,
+                cleared="reconciled",
+            ),
+        ],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+    assert update_result.create_sentinel is None
+    assert update_result.update_sentinel is not None
+    assert update_result.update_sentinel.flag_color == "green"
 
 
 def test_build_tracking_update_ignores_uncleared_new_transaction() -> None:

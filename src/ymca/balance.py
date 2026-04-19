@@ -25,6 +25,7 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from .memo import (
+    SENTINEL_FLAG_COLOR,
     SENTINEL_PAYEE_NAME,
     build_sentinel_memo,
     has_fx_marker,
@@ -230,12 +231,16 @@ def build_tracking_update(
             memo=new_memo,
             payee_name=SENTINEL_PAYEE_NAME,
             cleared="reconciled",
+            flag_color=SENTINEL_FLAG_COLOR,
         )
     else:
+        # Re-apply the flag on every update so a hand-cleared flag gets
+        # restored automatically on the next sync run.
         update_request = TransactionUpdateRequest(
             transaction_id=prior_sentinel_txn.id,
             amount_milliunits=None,
             memo=new_memo,
+            flag_color=SENTINEL_FLAG_COLOR,
         )
 
     return PreparedTrackingUpdate(

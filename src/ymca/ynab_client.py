@@ -102,11 +102,14 @@ class YnabClient:
 
     def update_transaction(self, plan_id: str, request: TransactionUpdateRequest) -> None:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        existing_kwargs: dict[str, Any] = {
+            "amount": request.amount_milliunits,
+            "memo": request.memo,
+        }
+        if request.flag_color is not None:
+            existing_kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
         payload = ynab.PutTransactionWrapper(
-            transaction=ynab.ExistingTransaction(
-                amount=request.amount_milliunits,
-                memo=request.memo,
-            )
+            transaction=ynab.ExistingTransaction(**existing_kwargs)
         )
         try:
             transactions_api.update_transaction(plan_id, request.transaction_id, payload)
@@ -122,12 +125,7 @@ class YnabClient:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
         payload = ynab.PatchTransactionsWrapper(
             transactions=[
-                ynab.SaveTransactionWithIdOrImportId(
-                    id=request.transaction_id,
-                    amount=request.amount_milliunits,
-                    memo=request.memo,
-                )
-                for request in requests
+                self._build_patch_transaction(request) for request in requests
             ]
         )
         try:
@@ -135,17 +133,31 @@ class YnabClient:
         except ApiException as exc:
             raise ApiError(_format_api_exception("update transactions", exc)) from exc
 
+    @staticmethod
+    def _build_patch_transaction(request: TransactionUpdateRequest) -> Any:
+        kwargs: dict[str, Any] = {
+            "id": request.transaction_id,
+            "amount": request.amount_milliunits,
+            "memo": request.memo,
+        }
+        if request.flag_color is not None:
+            kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
+        return ynab.SaveTransactionWithIdOrImportId(**kwargs)
+
     def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        new_kwargs: dict[str, Any] = {
+            "account_id": UUID(request.account_id),
+            "date": request.date,
+            "amount": request.amount_milliunits,
+            "payee_name": request.payee_name,
+            "memo": request.memo,
+            "cleared": ynab.TransactionClearedStatus(request.cleared),
+        }
+        if request.flag_color is not None:
+            new_kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
         payload = ynab.PostTransactionsWrapper(
-            transaction=ynab.NewTransaction(
-                account_id=UUID(request.account_id),
-                date=request.date,
-                amount=request.amount_milliunits,
-                payee_name=request.payee_name,
-                memo=request.memo,
-                cleared=ynab.TransactionClearedStatus(request.cleared),
-            )
+            transaction=ynab.NewTransaction(**new_kwargs)
         )
         try:
             response = transactions_api.create_transaction(plan_id, payload)

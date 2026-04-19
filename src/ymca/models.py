@@ -134,6 +134,7 @@ class TransactionUpdateRequest:
     transaction_id: str
     amount_milliunits: int | None
     memo: str
+    flag_color: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +145,7 @@ class NewTransactionRequest:
     memo: str
     payee_name: str | None
     cleared: ClearedStatus
+    flag_color: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
