@@ -656,6 +656,26 @@ def _reject_closed_name_conflicts(
     )
 
 
+def apply_account_tracking(plan_config: PlanConfig, tracked_aliases: set[str]) -> PlanConfig:
+    """Return ``plan_config`` with ``track_local_balance`` set per alias."""
+    return PlanConfig(
+        alias=plan_config.alias,
+        name=plan_config.name,
+        base_currency=plan_config.base_currency,
+        accounts=tuple(
+            AccountConfig(
+                alias=account.alias,
+                name=account.name,
+                currency=account.currency,
+                enabled=account.enabled,
+                track_local_balance=account.alias in tracked_aliases,
+            )
+            for account in plan_config.accounts
+        ),
+        fx_rates=plan_config.fx_rates,
+    )
+
+
 def build_plan_config(plan_name: str, account_plan: IntegrationAccountPlan) -> PlanConfig:
     """Build a :class:`PlanConfig` that matches the live test plan.
 

@@ -652,6 +652,81 @@ def test_sync_summary_prints_contributions_and_ambiguous_transfers(
     assert "Sync: full scan (no since_date, no server_knowledge)" in captured.out
 
 
+def test_sync_summary_omits_sentinel_action_when_tracking_entry_is_noop(
+    capsys: CaptureFixture[str],
+) -> None:
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(
+                alias="travel_hkd",
+                name="Travel HKD",
+                currency="HKD",
+                enabled=True,
+                track_local_balance=True,
+            ),
+        ),
+        fx_rates={
+            "HKD": FxRule(
+                rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True
+            )
+        },
+    )
+    from ymca.models import PreparedTrackingUpdate
+
+    prepared = PreparedConversion(
+        bindings=ResolvedBindings(
+            plan=plan,
+            plan_id="plan-1",
+            account_ids={"travel_hkd": "acct-1"},
+        ),
+        sync_request=SyncRequest(
+            last_knowledge_of_server=1, since_date=None, used_bootstrap=False
+        ),
+        queried_account_ids=("acct-1",),
+        fetched_transactions=0,
+        fetched_server_knowledge=1,
+        updates=(),
+        skipped=(),
+        tracking=(
+            PreparedTrackingUpdate(
+                account_alias="travel_hkd",
+                currency="HKD",
+                account_id="acct-1",
+                account_name="Travel HKD",
+                prior_sentinel=None,
+                prior_balance_milliunits=123400,
+                contributions=(),
+                ambiguous_transfers=(),
+                new_balance_milliunits=123400,
+                ynab_cleared_balance_milliunits=15820,
+                stronger_currency="USD",
+                drift_milliunits_stronger=0,
+                within_tolerance=True,
+                rebuild=False,
+                create_sentinel=None,
+                update_sentinel=None,
+            ),
+        ),
+        rebuild_balance=False,
+    )
+    outcome = ConversionOutcome(
+        prepared=prepared,
+        applied=False,
+        writes_performed=0,
+        saved_server_knowledge=None,
+        new_state=AppState(version=1, plans={}),
+    )
+
+    _print_conversion_summary(outcome)
+    captured = capsys.readouterr()
+
+    assert "travel_hkd (HKD): 123.40 -> 123.40 (delta 0.00)" in captured.out
+    assert "sentinel:" not in captured.out
+
+
 def test_sync_summary_warns_on_drift_beyond_tolerance(
     capsys: CaptureFixture[str],
 ) -> None:

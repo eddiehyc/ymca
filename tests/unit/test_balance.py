@@ -89,6 +89,7 @@ def _txn(
     cleared: str = "uncleared",
     deleted: bool = False,
     transfer_id: str | None = None,
+    payee_id: str | None = None,
     payee_name: str | None = None,
     paired_transfer_counted: bool | None = None,
 ) -> RemoteTransaction:
@@ -101,6 +102,7 @@ def _txn(
         transfer_account_id="acct-2" if transfer_id is not None else None,
         transfer_transaction_id=transfer_id,
         deleted=deleted,
+        payee_id=payee_id,
         payee_name=payee_name,
         cleared=cleared,  # type: ignore[arg-type]
         paired_transfer_counted=paired_transfer_counted,
@@ -515,6 +517,35 @@ def test_delta_transfer_unclearing_demotes_both_counted_marker_to_arrow() -> Non
     assert len(result.contributions) == 1
     assert result.contributions[0].signed_source_milliunits == -12340
     assert len(result.memo_flips) == 1
+    assert "[FX→]" in result.memo_flips[0].memo
+
+
+def test_rebuild_transfer_memo_flip_preserves_payee_id() -> None:
+    plan = _plan()
+    transfer = _txn(
+        txn_id="transfer-out",
+        amount_milliunits=-1582,
+        memo="Move | [FX] +/-12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="cleared",
+        transfer_id="transfer-in",
+        payee_id="11111111-1111-1111-1111-111111111111",
+        paired_transfer_counted=False,
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[transfer],
+        split_skipped_ids=set(),
+        rebuild=True,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert len(result.memo_flips) == 1
+    assert result.memo_flips[0].payee_id == "11111111-1111-1111-1111-111111111111"
     assert "[FX→]" in result.memo_flips[0].memo
 
 

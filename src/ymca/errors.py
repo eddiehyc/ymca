@@ -24,3 +24,7 @@ class StateError(YmcaError):
 
 class UserInputError(YmcaError):
     """Raised when CLI input is invalid or incomplete."""
+
+
+class UnsupportedOperationError(YmcaError):
+    """Raised when YNAB's API cannot safely perform the requested update."""

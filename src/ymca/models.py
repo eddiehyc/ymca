@@ -112,6 +112,7 @@ class RemoteTransaction:
     transfer_account_id: str | None
     transfer_transaction_id: str | None
     deleted: bool
+    payee_id: str | None = None
     payee_name: str | None = None
     cleared: ClearedStatus = "uncleared"
     paired_transfer_counted: bool | None = None

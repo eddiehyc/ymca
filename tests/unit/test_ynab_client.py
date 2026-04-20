@@ -305,7 +305,9 @@ def test_ynab_client_list_transactions_by_account_maps_snapshot(
             assert last_knowledge_of_server == 7
             return SimpleNamespace(
                 data=SimpleNamespace(
-                    transactions=[_make_transaction()],
+                    transactions=[
+                        _make_transaction(payee_id="11111111-1111-1111-1111-111111111111")
+                    ],
                     server_knowledge=99,
                 )
             )
@@ -322,9 +324,10 @@ def test_ynab_client_list_transactions_by_account_maps_snapshot(
             "a1",
             since_date=date(2026, 1, 1),
             last_knowledge_of_server=7,
-        )
+    )
     assert snapshot.server_knowledge == 99
     assert snapshot.transactions[0].id == "t1"
+    assert snapshot.transactions[0].payee_id == "11111111-1111-1111-1111-111111111111"
 
 
 def test_ynab_client_list_transactions_by_account_wraps_exception(
@@ -639,6 +642,7 @@ def test_ynab_client_update_transactions_sends_batch_payload(
             transaction_id="t2",
             amount_milliunits=-2,
             memo="b",
+            payee_id="11111111-1111-1111-1111-111111111111",
             flag_color="green",
         ),
     )
@@ -651,6 +655,9 @@ def test_ynab_client_update_transactions_sends_batch_payload(
     assert not hasattr(captured["payload"].transactions[0], "flag_color")
     # Second request carried green → forwarded to the SDK.
     assert captured["payload"].transactions[1].id == "t2"
+    assert str(captured["payload"].transactions[1].payee_id) == (
+        "11111111-1111-1111-1111-111111111111"
+    )
     assert captured["payload"].transactions[1].flag_color == "green"
 
 

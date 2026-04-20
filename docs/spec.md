@@ -304,7 +304,7 @@ Behavior:
 - dry-run by default
 - uses one bulk `update_transactions` call per account during apply runs where possible
 - fetches transaction detail before preparing writes
-- can rewrite split parent memos through the single-transaction update path
+- cannot reliably rewrite transfer transactions with split categories through the YNAB API; those rows require a manual memo edit in the YNAB web UI
 - preserves the legacy rate direction already encoded in the old memo
 
 ### 10.2 Account Delta Inspection
@@ -414,7 +414,7 @@ Concretely, for every tracked account on a normal (non-rebuild) `ymca sync` run:
    - **Sentinel transaction** (payee matches `[YMCA] Tracked Balance`): skip.
    - **Split transaction**: skip (already skipped from the FX path).
    - **Unmarked, not deleted**: goes through the normal FX conversion path. The marker written at convert time is the bracket that matches the current counted state: non-transfers use `[FX+]` when `should_be_counted` is true and `[FX]` otherwise; tracked transfers may instead use `[FX→]` or `[FX←]` when only one side is currently counted. Balance contribution is the YNAB `amount_milliunits` (still in source currency at this point) when `should_be_counted` is true, zero otherwise.
-   - **Marked (current or legacy)**: apply the 2×2 above. The memo flip happens as a batched `update_transactions` call right before the sentinel upsert.
+   - **Marked (current or legacy)**: apply the 2×2 above. The memo flip happens as a batched `update_transactions` call right before the sentinel upsert. Exception: if the row is a transfer with split categories and the memo would need to change, YMCA aborts the run and tells the user to edit the memo manually in the YNAB web UI because the API update endpoint does not support that workflow.
 4. Run the tolerance check (§12.6). Emit a warning if drift exceeds the threshold; do not block the run.
 5. Upsert the sentinel transaction only when its stored balance/shape differs from the desired state. First enablement creates the sentinel via `create_transaction` and records the resulting id into `state.yaml`; subsequent runs update it via `update_transaction` using the id from step 2. Quiet deltas with no balance change leave the sentinel untouched.
 
@@ -428,6 +428,7 @@ Because the counted state is recorded in the memo itself, the engine correctly h
 - Each account's running balance is recomputed from scratch:
   - Every non-sentinel, non-deleted, non-split transaction that is `cleared` or `reconciled` **and** carries either the current `[FX]` marker or the legacy `(FX rate: ...)` marker contributes its parsed local-currency amount to the new balance.
   - Unmarked transactions encountered during rebuild are FX-converted by the normal rules; their contribution to the balance follows §12.4.
+- If rebuild would need to rewrite the memo on a transfer transaction that also has split categories, the command errors and instructs the user to update that memo manually in the YNAB web UI, then rerun `ymca sync`.
 - The sentinel is upserted with the newly computed balance.
 - `--rebuild-balance` is mutually exclusive with `--bootstrap-since`.
 - `--rebuild-balance` requires at least one tracked account in scope after the `--account` filter; otherwise the command errors out before contacting YNAB.
@@ -451,7 +452,7 @@ The warning is informational only. The sync run does not fail.
 
 ### 12.8 Known Limitations
 
-The memo-ledger model from §12.4 handles every user-driven **status change** on a tracked row without any local per-transaction storage. It cannot, however, handle user edits that change the underlying **amount or memo payload** of an already-FX-converted row. That leaves exactly one unsupported workflow:
+The memo-ledger model from §12.4 handles every user-driven **status change** on a tracked row without any local per-transaction storage. Two workflows remain unsupported:
 
 - **Editing a cleared/reconciled transaction that YMCA has already FX-converted.** The memo still carries the old source amount in the counted FX marker (`[FX+]`, `[FX→]`, or `[FX←]`, depending on the current transfer state), so the engine reads the original contribution and the 2×2 stays at `was_counted=True, should_be_counted=True` → no-op. Meanwhile YNAB's `cleared_balance` reflects the new amount. Drift appears in the next run's tolerance check.
 
@@ -462,6 +463,8 @@ The memo-ledger model from §12.4 handles every user-driven **status change** on
 
 **Recommended workflow** when a cleared row needs to change: delete the old transaction in YNAB and enter a fresh one. The delete surfaces in the next delta as `[FX+]` + cleared + deleted → **subtract** and flip to `[FX]`; the new entry surfaces as unmarked + cleared → **add** and FX-convert with a fresh `[FX+]` marker. Net effect: `−old + new` with no drift and no manual intervention.
 
+- **Rewriting the memo on a transfer transaction with split categories.** YMCA can still read an existing FX marker on that row, but if delta/rebuild tracking would need to flip the marker bracket, the YNAB API cannot reliably save the update. In that case the run aborts before writing anything and prints the exact memo text that should be entered manually in the YNAB web UI. After saving that memo in the web UI, rerun `ymca sync`.
+
 **Recovery from drift**: run `ymca sync --rebuild-balance --apply`. Rebuild re-derives the balance from every active FX-marked cleared row in the account and re-normalizes every marker bracket to match its current cleared/reconciled state. Drift from hand-edits reappears only if the user continues editing FX-marked rows after the rebuild.
 
 ### 12.9 Interaction With Existing Skip Rules
@@ -470,4 +473,4 @@ The top-level skip rules from §7.2 still apply to the FX conversion step:
 
 - Sentinel transactions are skipped for FX conversion (they already have a special memo shape).
 - Split transactions are still skipped; their local-currency amount does not contribute to the tracked balance.
-- Already-marked transactions (current `[FX]` / `[FX+]` / `[FX→]` / `[FX←]` or legacy) still skip FX conversion but are inspected by the balance algorithm as described in §12.4 and §12.5.
+- Already-marked transactions (current `[FX]` / `[FX+]` / `[FX→]` / `[FX←]` or legacy) still skip FX conversion but are inspected by the balance algorithm as described in §12.4 and §12.5. For split transfer parents, that inspection is read-only unless the memo already matches the desired state; any required memo rewrite is rejected per §12.8.

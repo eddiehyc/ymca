@@ -178,6 +178,8 @@ class YnabClient:
             "amount": request.amount_milliunits,
             "memo": request.memo,
         }
+        if request.payee_id is not None:
+            kwargs["payee_id"] = UUID(request.payee_id)
         if request.flag_color is not None:
             kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
         return ynab.SaveTransactionWithIdOrImportId(**kwargs)
@@ -274,6 +276,7 @@ class YnabClient:
             transfer_account_id=_optional_string(raw_transaction.transfer_account_id),
             transfer_transaction_id=_optional_string(raw_transaction.transfer_transaction_id),
             deleted=bool(raw_transaction.deleted),
+            payee_id=_optional_string(getattr(raw_transaction, "payee_id", None)),
             payee_name=_optional_string(getattr(raw_transaction, "payee_name", None)),
             cleared=_map_cleared(getattr(raw_transaction, "cleared", None)),
         )

@@ -277,6 +277,7 @@ class InMemoryGateway:
             transfer_account_id=transaction.transfer_account_id,
             transfer_transaction_id=transaction.transfer_transaction_id,
             deleted=transaction.deleted,
+            payee_id=transaction.payee_id,
             payee_name=transaction.payee_name,
             cleared=transaction.cleared,
         )

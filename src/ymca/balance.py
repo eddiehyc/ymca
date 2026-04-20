@@ -409,11 +409,7 @@ def _classify_delta(
             is_transfer=transaction.transfer_transaction_id is not None,
         )
         if new_memo is not None and new_memo != transaction.memo:
-            memo_flip = TransactionUpdateRequest(
-                transaction_id=transaction.id,
-                amount_milliunits=None,
-                memo=new_memo,
-            )
+            memo_flip = _build_memo_flip_request(transaction=transaction, new_memo=new_memo)
 
     if should_be_counted and not was_counted:
         return (
@@ -489,11 +485,7 @@ def _classify_rebuild(
 
     memo_flip: TransactionUpdateRequest | None = None
     if new_memo is not None and new_memo != (transaction.memo or ""):
-        memo_flip = TransactionUpdateRequest(
-            transaction_id=transaction.id,
-            amount_milliunits=None,
-            memo=new_memo,
-        )
+        memo_flip = _build_memo_flip_request(transaction=transaction, new_memo=new_memo)
 
     if not should_be_counted:
         return None, memo_flip
@@ -634,6 +626,21 @@ def _resolve_marked_source_milliunits(
     # fall back to the sign embedded in the memo.
     return source_amount_milliunits_from_marker(
         transaction.memo, fallback_sign=None
+    )
+
+
+def _build_memo_flip_request(
+    *, transaction: RemoteTransaction, new_memo: str
+) -> TransactionUpdateRequest:
+    return TransactionUpdateRequest(
+        transaction_id=transaction.id,
+        amount_milliunits=None,
+        memo=new_memo,
+        payee_id=(
+            transaction.payee_id
+            if transaction.transfer_transaction_id is not None
+            else None
+        ),
     )
 
 

@@ -8,7 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Protocol
 
 from .balance import TransferDirectionPrompt, build_tracking_update
-from .errors import ApiError, ConfigError, UserInputError
+from .errors import ApiError, ConfigError, UnsupportedOperationError, UserInputError
 from .memo import (
     append_fx_marker,
     build_fx_marker,
@@ -403,6 +403,12 @@ def _build_tracking_updates(
                 prompt_for_transfer_direction=prompt_for_transfer_direction,
             )
         )
+        _raise_if_split_transfer_memo_flip_is_unsupported(
+            gateway=gateway,
+            plan_id=bindings.plan_id,
+            account_alias=account.alias,
+            tracking_update=prepared[-1],
+        )
     return tuple(prepared)
 
 
@@ -434,9 +440,31 @@ def _fetch_saved_sentinel(
         transfer_account_id=detail.transfer_account_id,
         transfer_transaction_id=detail.transfer_transaction_id,
         deleted=detail.deleted,
+        payee_id=detail.payee_id,
         payee_name=detail.payee_name,
         cleared=detail.cleared,
     )
+
+
+def _raise_if_split_transfer_memo_flip_is_unsupported(
+    *,
+    gateway: YnabGateway,
+    plan_id: str,
+    account_alias: str,
+    tracking_update: PreparedTrackingUpdate,
+) -> None:
+    for request in tracking_update.memo_flips:
+        if request.payee_id is None:
+            continue
+        detail = gateway.get_transaction_detail(plan_id, request.transaction_id)
+        if detail.transfer_transaction_id is None or detail.subtransaction_count == 0:
+            continue
+        raise UnsupportedOperationError(
+            "YNAB's API cannot update transfer transactions with split categories. "
+            f"Transaction {request.transaction_id} in account {account_alias} "
+            f"needs its memo changed manually in the YNAB web UI to: {request.memo} "
+            "Then rerun `ymca sync`."
+        )
 
 
 def _apply_tracking_writes(
@@ -587,6 +615,11 @@ def _prepare_update(
         transaction_id=transaction.id,
         amount_milliunits=new_amount_milliunits,
         memo=new_memo,
+        payee_id=(
+            transaction.payee_id
+            if is_transfer and transaction.payee_id is not None
+            else None
+        ),
     )
     return PreparedUpdate(
         transaction_id=transaction.id,

@@ -35,7 +35,7 @@ Build the set of planned transaction updates without writing anything back. Stat
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — multiple coverage tests including `test_execute_conversion_dry_run_returns_without_writing`.
 - Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_sync_apply_then_quiet_delta_workflow`.
-- Integration: [`tests/integration/test_sync_dry_run.py`](../tests/integration/test_sync_dry_run.py) — builds a `PreparedConversion` against the live seed; asserts no writes occurred.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — dry-run assertions run inside the consolidated session (`build_prepared_conversion` before the first apply).
 
 ## W5. `ymca sync --apply`
 
@@ -43,7 +43,7 @@ Persist converted amounts and memos to YNAB. Also saves refreshed `server_knowle
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_execute_conversion_saves_follow_up_server_knowledge`, `test_execute_conversion_batches_writes_per_account`; [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — `test_sync_apply_updates_state_file`.
 - Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_sync_apply_then_quiet_delta_workflow`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — executes against the live test plan, verifies transactions are actually modified in YNAB.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — executes `execute_conversion` against the live test plan with a shared seed dataset.
 
 ## W6. `ymca sync --bootstrap-since YYYY-MM-DD`
 
@@ -63,7 +63,7 @@ Limit the sync to one or more configured account aliases. Unknown or disabled al
 
 ## W8. Legacy memo migration (deprecated helper)
 
-Rewrite legacy `(FX rate: ...)` memos into the current `[FX] ... (rate: ... PAIR)` format. Split parents use a single `update_transaction` call; others are batched.
+Rewrite legacy `(FX rate: ...)` memos into the current `[FX] ... (rate: ... PAIR)` format. Non-split rows are batched. Transfer transactions with split categories remain manual-only because YNAB's API does not reliably update that row shape.
 
 Script: [`deprecated/one_off_scripts/migrate_legacy_fx_memos.py`](../deprecated/one_off_scripts/migrate_legacy_fx_memos.py).
 
@@ -93,19 +93,19 @@ Script: [`deprecated/one_off_scripts/get_account_delta.py`](../deprecated/one_of
 
 ## W11. `ymca sync` with local currency tracking
 
-Opt-in, per-account. When an account has `track_local_balance: true`, `ymca sync` additionally maintains a source-currency running balance on a dedicated YNAB sentinel transaction (payee name `[YMCA] Tracked Balance`, amount `0`, cleared status `reconciled`). Balance updates are delta-based: a new cleared/reconciled transaction adds to the balance, a subsequent delete of such a transaction subtracts; uncleared transitions are not tracked (see E24, E25). Quiet deltas with no balance change leave the sentinel untouched. Transfer pairs still share one YNAB memo, so partial-clear states use directional transfer markers (`[FX→]` / `[FX←]`) to preserve which side is currently counted. Tolerance check at the end of the run warns if the tracked balance drifts beyond `0.01` stronger-currency units vs YNAB's `cleared_balance`.
+Opt-in, per-account. When an account has `track_local_balance: true`, `ymca sync` additionally maintains a source-currency running balance on a dedicated YNAB sentinel transaction (payee name `[YMCA] Tracked Balance`, amount `0`, cleared status `reconciled`). Balance updates are delta-based: a new cleared/reconciled transaction adds to the balance, a subsequent delete of such a transaction subtracts; uncleared transitions are not tracked (see E24, E25). Quiet deltas with no balance change leave the sentinel untouched. Transfer pairs still share one YNAB memo, so partial-clear states use directional transfer markers (`[FX→]` / `[FX←]`) to preserve which side is currently counted. If a tracked memo flip would target a transfer transaction with split categories, YMCA stops and tells the user to update that memo manually in the YNAB web UI. Tolerance check at the end of the run warns if the tracked balance drifts beyond `0.01` stronger-currency units vs YNAB's `cleared_balance`.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) and [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — covers the transition matrix, transfer marker states, sentinel upsert, tolerance math.
-- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_local_currency_tracking_lifecycle_workflow`, `test_transfer_tracking_partial_clear_workflow`.
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — seeds cleared/uncleared/transfer rows on a tracked account and asserts the sentinel memo reflects the running balance.
+- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_tracking_uncleared_then_cleared_updates_sentinel`, `test_local_currency_tracking_lifecycle_workflow`, `test_transfer_tracking_partial_clear_workflow`.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — tracking, uncleared→cleared, delete/reversal, optional HKD transfer legs, rebuild.
 
 ## W12. `ymca sync --rebuild-balance`
 
-Recovery mode for a tracked account whose sentinel has drifted (e.g. a cleared transaction was edited, un-cleared, or the sentinel was edited by hand). Ignores saved `server_knowledge` for the selected accounts, re-fetches every active transaction, parses both legacy `(FX rate: ...)` and current `[FX] ...` markers to derive the source amount per row, and recomputes the sentinel from scratch. Requires at least one account in scope with `track_local_balance: true`; mutually exclusive with `--bootstrap-since`. Prompts interactively for the direction of any zero-amount transfer encountered (see E22).
+Recovery mode for a tracked account whose sentinel has drifted (e.g. a cleared transaction was edited, un-cleared, or the sentinel was edited by hand). Ignores saved `server_knowledge` for the selected accounts, re-fetches every active transaction, parses both legacy `(FX rate: ...)` and current `[FX] ...` markers to derive the source amount per row, and recomputes the sentinel from scratch. Requires at least one account in scope with `track_local_balance: true`; mutually exclusive with `--bootstrap-since`. Prompts interactively for the direction of any zero-amount transfer encountered (see E22). If rebuild would need to rewrite the memo on a split transfer parent, YMCA errors and prints the manual web-UI memo update the user needs to make first.
 
-- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py), [`tests/unit/test_balance.py`](../tests/unit/test_balance.py), [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — covers full-scan parsing, argparse wiring, mutex enforcement.
-- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_local_currency_tracking_lifecycle_workflow`.
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — runs a rebuild after synthetic drift and verifies the sentinel is corrected.
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py), [`tests/unit/test_balance.py`](../tests/unit/test_balance.py), [`tests/unit/test_cli.py`](../tests/unit/test_cli.py) — covers full-scan parsing, split exclusion, argparse wiring, mutex enforcement.
+- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_local_currency_tracking_lifecycle_workflow`, `test_rebuild_tracking_errors_for_split_transfer_parent_workflow`.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — rebuild after hand-edited sentinel memo.
 
 ## Path Resolution Workflows
 

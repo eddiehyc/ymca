@@ -110,8 +110,14 @@ Every integration run:
 
 1. Resolves the test plan and its accounts once (cached for the session).
 2. **Plan wipe**: deletes every active transaction already present in the dedicated test plan, retrying transient failures and re-listing until the plan is verified empty.
-3. Runs workflow tests, each seeding only the rows it needs.
-4. **Session teardown**: deletes every active transaction still present in the dedicated test plan using the same retrying verification sweep.
+3. Runs workflow tests. The consolidated live scenario is
+   [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py)
+   (`test_integration_session_all_workflows`): one ordered run that seeds a shared
+   dataset, applies incrementally, and stays within the API budget.
+4. **Session teardown**: deletes every active transaction still present in the
+   dedicated test plan using the same retrying verification sweep — **unless**
+   `YNAB_INTEGRATION_LEAVE_DIRTY` is set to `1`/`true`/`yes` (inspect the plan in
+   the YNAB UI; the next session still wipes at startup).
 
 The harness treats all seeded rows as normal manually entered transactions. It
 does **not** rely on `import_id` tagging. Tests identify their own seeded rows
@@ -123,10 +129,12 @@ using unique payee names and other transaction content that they control.
 
 ### 3.5 Shared Seed Dataset
 
-The seeded transactions cover the workflows and edge cases in
-[workflows.md](workflows.md) and [edge-cases.md](edge-cases.md). Each
-integration test creates only the rows it needs and relies on the session-level
-plan wipe for cleanup.
+The consolidated session test seeds payee-tagged rows that cover dry-run skips
+(split, legacy, already-converted), tracked-balance transitions, GBP/HKD
+conversion, optional HKD transfers, delete/reversal, and rebuild — see
+[workflows.md](workflows.md) and [edge-cases.md](edge-cases.md). The session-level
+plan wipe clears leftovers before the run; per `AGENTS.md`, only the dedicated
+test plan is mutated.
 
 ## 4. Adding New Tests
 
@@ -148,7 +156,7 @@ When you discover a new workflow or edge case:
 | `tests/workflows/helpers.py` | `InMemoryGateway`, shared by offline workflow tests. |
 | `tests/integration/conftest.py` | Session-scoped fixtures: API key, plan lookup, accounts, seed, teardown, rate-limit guard. |
 | `tests/integration/helpers.py` | `CountingYnabClient`, account provisioning, SDK delete helper, seed builders. |
-| `tests/integration/test_*.py` | Live coverage for supported workflows, all marked `integration`. |
+| `tests/integration/test_*.py` | Live coverage for supported workflows, all marked `integration` (main scenario: `test_z_integration_session_workflow.py`). |
 | `docs/testing.md` | This file. |
 | `docs/workflows.md` | Every workflow mapped to its covering tests. |
 | `docs/edge-cases.md` | Every edge case mapped to its covering tests. |

@@ -7,7 +7,7 @@ import pytest
 
 from tests.fakes import FakeGateway
 from ymca.conversion import build_prepared_conversion, execute_conversion, resolve_bindings
-from ymca.errors import ApiError, ConfigError, UserInputError
+from ymca.errors import ApiError, ConfigError, UnsupportedOperationError, UserInputError
 from ymca.models import (
     AccountConfig,
     AccountSnapshot,
@@ -428,6 +428,7 @@ def test_build_prepared_conversion_processes_transfer_once_with_plus_minus_prefi
                 transfer_transaction_id="txn-in",
                 deleted=False,
                 subtransaction_count=0,
+                payee_id="11111111-1111-1111-1111-111111111111",
             )
         },
         transaction_snapshots_by_account={
@@ -443,6 +444,7 @@ def test_build_prepared_conversion_processes_transfer_once_with_plus_minus_prefi
                             transfer_account_id="acct-2",
                             transfer_transaction_id="txn-in",
                             deleted=False,
+                            payee_id="11111111-1111-1111-1111-111111111111",
                         ),
                     ),
                     server_knowledge=44,
@@ -481,6 +483,7 @@ def test_build_prepared_conversion_processes_transfer_once_with_plus_minus_prefi
     assert prepared.updates[0].transaction_id == "txn-out"
     assert prepared.updates[0].is_transfer is True
     assert prepared.updates[0].new_memo == "Move money | [FX] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert prepared.updates[0].request.payee_id == "11111111-1111-1111-1111-111111111111"
     assert len(prepared.skipped) == 1
     assert prepared.skipped[0].transaction_id == "txn-in"
     assert prepared.skipped[0].reason == "paired-transfer"
@@ -1434,7 +1437,20 @@ def test_build_prepared_conversion_rebuild_balance_uses_full_scan() -> None:
                 server_knowledge=1,
             )
         },
-        transaction_details={},
+        transaction_details={
+            "txn-legacy": RemoteTransactionDetail(
+                id="txn-legacy",
+                date=date(2026, 4, 9),
+                amount_milliunits=1582,
+                memo="Dinner | 12.34 HKD (FX rate: 7.8)",
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=0,
+                cleared="cleared",
+            ),
+        },
         transaction_snapshots_by_account={
             "acct-1": [
                 TransactionSnapshot(
@@ -1550,6 +1566,138 @@ def test_build_prepared_conversion_rebuild_balance_full_scans_only_tracked_accou
         ("plan-1", "acct-hkd", None, None),
         ("plan-1", "acct-gbp", None, 7),
     ]
+
+
+def test_build_prepared_conversion_rebuild_balance_errors_for_split_transfer_memo_flip(
+) -> None:
+    plan = _tracked_hkd_plan()
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(
+                        id="acct-1",
+                        name="Travel HKD",
+                        deleted=False,
+                        cleared_balance_milliunits=0,
+                    ),
+                ),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={
+            "txn-split": RemoteTransactionDetail(
+                id="txn-split",
+                date=date(2026, 4, 10),
+                amount_milliunits=-78000,
+                memo="FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)",
+                account_id="acct-1",
+                transfer_account_id="acct-cash",
+                transfer_transaction_id="txn-in",
+                deleted=False,
+                subtransaction_count=2,
+                payee_id="11111111-1111-1111-1111-111111111111",
+                payee_name="Transfer : Cash",
+                cleared="cleared",
+            ),
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-split",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=-78000,
+                            memo="FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)",
+                            account_id="acct-1",
+                            transfer_account_id="acct-cash",
+                            transfer_transaction_id="txn-in",
+                            deleted=False,
+                            payee_id="11111111-1111-1111-1111-111111111111",
+                            payee_name="Transfer : Cash",
+                            cleared="cleared",
+                        ),
+                    ),
+                    server_knowledge=42,
+                )
+            ]
+        },
+    )
+
+    with pytest.raises(UnsupportedOperationError, match="YNAB web UI") as exc:
+        build_prepared_conversion(
+            plan=plan,
+            state=AppState(version=1, plans={}),
+            gateway=gateway,
+            selected_account_aliases=(),
+            bootstrap_since=date(2026, 4, 1),
+            prompt_for_start_date=lambda: date(2026, 4, 1),
+            rebuild_balance=True,
+        )
+
+    assert "txn-split" in str(exc.value)
+    assert "[FX→]" in str(exc.value)
+
+
+def test_build_prepared_conversion_allows_split_transfer_when_no_memo_flip_is_needed(
+) -> None:
+    plan = _tracked_hkd_plan()
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(
+                        id="acct-1",
+                        name="Travel HKD",
+                        deleted=False,
+                        cleared_balance_milliunits=0,
+                    ),
+                ),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-split",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=-78000,
+                            memo="FPS | [FX→] -/+78 HKD (rate: 0.12821 USD/HKD)",
+                            account_id="acct-1",
+                            transfer_account_id="acct-cash",
+                            transfer_transaction_id="txn-in",
+                            deleted=False,
+                            payee_id="11111111-1111-1111-1111-111111111111",
+                            payee_name="Transfer : Cash",
+                            cleared="cleared",
+                        ),
+                    ),
+                    server_knowledge=42,
+                )
+            ]
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+        rebuild_balance=True,
+    )
+
+    assert prepared.tracking[0].memo_flips == ()
+    assert prepared.tracking[0].new_balance_milliunits == -78000
+
+
 
 
 def test_build_prepared_conversion_fetches_saved_sentinel_when_delta_is_empty() -> None:

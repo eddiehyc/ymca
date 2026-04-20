@@ -197,6 +197,63 @@ def test_sync_bootstrap_and_account_filter_workflow(
     assert gateway.detail("txn-gbp").memo == "GBP spend"
 
 
+def test_tracking_uncleared_then_cleared_updates_sentinel(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """Uncleared first sync: ``[FX]`` and zero sentinel; after clear: ``[FX+]`` and balance."""
+    config_path = tmp_path / "config.yaml"
+    state_path = tmp_path / "state.yaml"
+    _write_config(config_path, track_local_balance=True)
+    gateway = InMemoryGateway(
+        plan_id="plan-1",
+        plan_name="Example Plan",
+        accounts=(SimulatedAccount(id="acct-hkd", name="Travel HKD"),),
+        transactions=(
+            SimulatedTransaction(
+                id="txn-uc",
+                date=date(2026, 4, 10),
+                amount_milliunits=-12340,
+                memo="Track after clear",
+                account_id="acct-hkd",
+                payee_name="Track after clear",
+                cleared="uncleared",
+            ),
+        ),
+    )
+    _patch_cli_gateway(
+        monkeypatch,
+        gateway=gateway,
+        config_path=config_path,
+        state_path=state_path,
+    )
+
+    first_exit = main(["sync", "--apply", "--bootstrap-since", "2026-04-01"])
+    capsys.readouterr()
+
+    assert first_exit == 0
+    first_txn = gateway.detail("txn-uc")
+    assert "[FX] -12.34 HKD (rate: 7.8 HKD/USD)" in (first_txn.memo or "")
+    assert "[FX+]" not in (first_txn.memo or "")
+    sentinel_first = gateway.find_active_transaction_by_payee(
+        SENTINEL_PAYEE_NAME, account_id="acct-hkd"
+    )
+    assert "[YMCA-BAL] HKD 0.00" in (sentinel_first.memo or "")
+
+    gateway.set_cleared("txn-uc", "cleared")
+    second_exit = main(["sync", "--apply"])
+    capsys.readouterr()
+
+    assert second_exit == 0
+    cleared_txn = gateway.detail("txn-uc")
+    assert "[FX+] -12.34 HKD (rate: 7.8 HKD/USD)" in (cleared_txn.memo or "")
+    sentinel_second = gateway.find_active_transaction_by_payee(
+        SENTINEL_PAYEE_NAME, account_id="acct-hkd"
+    )
+    assert "[YMCA-BAL] HKD -12.34" in (sentinel_second.memo or "")
+
+
 def test_local_currency_tracking_lifecycle_workflow(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -404,6 +461,73 @@ fx_rates:
         ).memo
         or ""
     )
+
+
+def test_rebuild_tracking_errors_for_split_transfer_parent_workflow(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    state_path = tmp_path / "state.yaml"
+    _write_config(config_path, track_local_balance=True)
+    gateway = InMemoryGateway(
+        plan_id="plan-1",
+        plan_name="Example Plan",
+        accounts=(
+            SimulatedAccount(id="acct-hkd", name="Travel HKD"),
+            SimulatedAccount(id="acct-cash", name="Cash"),
+        ),
+        transactions=(
+            SimulatedTransaction(
+                id="txn-split-out",
+                date=date(2026, 4, 10),
+                amount_milliunits=-78000,
+                memo="FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)",
+                account_id="acct-hkd",
+                transfer_account_id="acct-cash",
+                transfer_transaction_id="txn-split-in",
+                payee_id="11111111-1111-1111-1111-111111111111",
+                payee_name="Transfer : Cash",
+                cleared="cleared",
+                subtransaction_count=2,
+                subtransactions=(
+                    RemoteSubTransaction(
+                        amount_milliunits=-39000,
+                        category_id="22222222-2222-2222-2222-222222222222",
+                        memo="Food",
+                    ),
+                    RemoteSubTransaction(
+                        amount_milliunits=-39000,
+                        category_id="33333333-3333-3333-3333-333333333333",
+                        memo="Taxi",
+                    ),
+                ),
+            ),
+        ),
+    )
+    _patch_cli_gateway(
+        monkeypatch,
+        gateway=gateway,
+        config_path=config_path,
+        state_path=state_path,
+    )
+
+    exit_code = main(["sync", "--rebuild-balance", "--apply", "--account", "travel_hkd"])
+    output = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "YNAB's API cannot update transfer transactions with split categories" in (
+        output.err
+    )
+    assert "YNAB web UI" in output.err
+    assert "txn-split-out" in output.err
+    assert "[FX→] -/+78 HKD" in output.err
+    assert "Mode: APPLY" not in output.out
+    assert gateway.update_batches == []
+    assert gateway.updates == []
+    assert gateway.created_transactions == []
+    assert gateway.detail("txn-split-out").memo == "FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)"
 
 
 def test_migrate_legacy_memo_workflow(

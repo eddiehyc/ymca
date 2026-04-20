@@ -7,7 +7,9 @@ This conftest is the *only* place that:
   :class:`tests.integration.helpers.CountingYnabClient`.
 * Resolves the id of the dedicated ``_Intergration Test_ USE ONLY`` plan and
   caches the list of open accounts within it.
-* Empties that dedicated plan before the session starts and again at teardown.
+* Empties that dedicated plan before the session starts and again at teardown
+  (teardown is skipped when ``YNAB_INTEGRATION_LEAVE_DIRTY`` is set so the UI
+  can be inspected).
 
 All three behaviors are required by ``AGENTS.md``; centralizing them keeps the
 individual test files focused on workflow assertions.
@@ -162,7 +164,13 @@ def integration_env(
     try:
         yield env
     finally:
-        _teardown_session_transactions(gateway, plan)
+        leave_dirty = os.environ.get("YNAB_INTEGRATION_LEAVE_DIRTY", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if not leave_dirty:
+            _teardown_session_transactions(gateway, plan)
 
 
 def _clear_test_plan_transactions(

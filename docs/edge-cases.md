@@ -17,28 +17,29 @@ The "Required by AGENTS.md" section covers the edge cases explicitly called out 
 A transaction with amount `0` must not be skipped; the FX marker is still appended (`0 <CCY>`), and the uploaded amount remains `0` regardless of the configured rate.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_keeps_zero_amount_transactions`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes a zero-amount transaction on a foreign account.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — seed includes a zero-amount transaction on a foreign account.
 
 ### E2. Transfer transactions
 
 A transfer pair (one "out" side in the source account, one "in" side in the target account) must be converted **once**, not twice. The surviving side uses a `+/-` literal prefix in the memo. Processing must not depend on the order accounts are fetched.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_processes_transfer_once_with_plus_minus_prefix`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes an HKD↔GBP transfer pair; post-apply state asserts only one side is rewritten.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — when `HKD Integration 2` exists, seeds an HKD↔HKD transfer; `PreparedConversion` asserts exactly one transfer update and at least one `paired-transfer` skip.
 
 ### E3. Transactions with split categories
 
 Transactions whose `subtransaction_count > 0` are skipped by the main `sync` path. (The legacy migration helper handles split parents specifically; see E9.)
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_skips_deleted_and_split_transactions`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes a split transaction; integration asserts the main converter produced `skipped(reason="split")` and the YNAB record is untouched.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — seed includes a split transaction; integration asserts the main converter produced `skipped(reason="split")` and the YNAB record is untouched.
 
 ### E4. Transfer transactions with split categories
 
-A split on the outflow leg of a transfer is still skipped by the main converter (split rule wins over transfer handling), and the corresponding inflow leg in the paired account is also left untouched. This combines E2 and E3.
+A split on the outflow leg of a transfer is still skipped by the main conversion pass (split rule wins over transfer handling), and the corresponding inflow leg in the paired account is also left untouched there. Already-marked split transfer parents can still be read during tracked-balance delta/rebuild runs, but if YMCA would need to rewrite their memo, the run now fails with a manual-action message because YNAB's API does not support updating transfer transactions with split categories reliably. The user must paste the suggested memo into the YNAB web UI and rerun the sync.
 
-- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_split_transfer_is_skipped_not_converted`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — seed includes a transfer pair where one side is split into subtransactions; post-apply asserts neither leg was modified.
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_split_transfer_is_skipped_not_converted`, `test_build_prepared_conversion_deduplicates_transfer_pairs`, `test_build_prepared_conversion_rebuild_balance_errors_for_split_transfer_memo_flip`, `test_build_prepared_conversion_allows_split_transfer_when_no_memo_flip_is_needed`; [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_rebuild_transfer_memo_flip_preserves_payee_id`.
+- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_rebuild_tracking_errors_for_split_transfer_parent_workflow`.
+- Integration: not exercised live (split transfer parents are unreliable via the YNAB API); offline workflow above covers the expectation.
 
 ## Additional edge cases discovered in the codebase
 
@@ -47,14 +48,14 @@ A split on the outflow leg of a transfer is still skipped by the main converter 
 Skipped with reason `already-converted`; the amount is not double-converted.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_uses_milliunit_precision_and_skips_marked_transactions`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py).
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — seed includes an already-marked HKD row; `PreparedConversion` skips it with `already-converted`.
 
 ### E6. Transaction carrying the legacy `(FX rate: ...)` marker
 
 Skipped by the main CLI with reason `legacy-marker`; handled only by the migration helper.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_skips_legacy_marked_transactions`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — verifies the main CLI skips legacy-marked rows in live YNAB data.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — verifies the main CLI skips legacy-marked rows in live YNAB data.
 
 ### E7. Deleted transactions
 
@@ -68,21 +69,21 @@ Transactions with `deleted: true` are skipped. They must not contribute to `writ
 YNAB amounts are milliunits; rounding happens at milliunit precision, not cent precision. `12340` at `7.8 HKD/USD` uploads `1582`, not `1580`.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — asserts `converted_amount_milliunits == 1582` in the HKD tests.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — HKD seed uses an amount sensitive to milliunit rounding, asserts the post-apply amount matches.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — HKD seed uses an amount sensitive to milliunit rounding, asserts the post-apply amount matches.
 
 ### E9. Multiply FX path (`divide_to_base: false`, GBP)
 
 For GBP with `divide_to_base: false`, `base = source * rate`. Conversion math and memo pair label (`USD/GBP`) must reflect this direction.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_multiply_path_when_divide_false`.
-- Integration: [`tests/integration/test_sync_apply.py`](../tests/integration/test_sync_apply.py) — GBP seed covers this direction.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — GBP seed covers this direction.
 
 ### E10. Long-rate memo rounding
 
 The `rate_text` embedded in new `[FX]` memos is rounded to three decimal places (`ROUND_HALF_UP`) and normalized (trailing zeros trimmed), even when the configured `rate` has more precision. Conversion math still uses full precision.
 
 - Unit: [`tests/unit/test_config.py`](../tests/unit/test_config.py) — `test_parse_rate_rounds_to_three_decimal_places`.
-- Integration: [`tests/integration/test_sync_dry_run.py`](../tests/integration/test_sync_dry_run.py) — uses a four-decimal rate and asserts the memo shows three places.
+- Integration: not duplicated live (integration `rate_text` values are short); the unit test above is canonical for multi-decimal `rate` → three-decimal memo behavior.
 
 ### E11. Double-converted transactions (legacy repair pattern)
 
@@ -133,7 +134,7 @@ An unparseable date on the CLI raises `argparse.ArgumentTypeError` and exits non
 
 ### E18. Soft-delete preservation in integration test plan
 
-YNAB `DELETE /transactions/{id}` is soft; cleaned transactions remain in the plan with `deleted: true`. The harness relies on this being a no-op for active-state assertions and wipes every active transaction in the dedicated test plan before and after the session.
+YNAB `DELETE /transactions/{id}` is soft; cleaned transactions remain in the plan with `deleted: true`. The harness relies on this being a no-op for active-state assertions and wipes every active transaction in the dedicated test plan before the session and after the session unless `YNAB_INTEGRATION_LEAVE_DIRTY` is set.
 
 - Integration: [`tests/integration/conftest.py`](../tests/integration/conftest.py) — plan wipe + session teardown.
 
@@ -154,7 +155,7 @@ If the integration harness makes more than the configured number of SDK calls in
 A cleared or reconciled transaction whose YNAB base-currency amount is `0` may still carry a signed memo amount (e.g. FX conversion rounded `0.499 HKD` to `0`). Sign inference falls back to the memo sign when the YNAB amount is `0` and the transaction is not a transfer.
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — rebuild path covers the sign-from-memo branch.
+- Integration: not covered live (needs a contrived zero-amount cleared row); unit tests above cover the branch.
 
 ### E22. Zero-amount transfer — interactive direction prompt
 
@@ -186,7 +187,7 @@ All user-visible status transitions reduce to one cell:
 Coverage:
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — one test per cell of the matrix plus dedicated regressions (`test_delta_cleared_to_reconciled_is_noop_on_counted_row`, `test_delta_counted_to_uncleared_subtracts_and_flips_back`, `test_delta_migrates_legacy_marker_to_counted_and_contributes`, `test_build_tracking_update_subtracts_counted_then_deleted`).
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — the full-lifecycle test drives cleared → deleted and asserts the sentinel memo reflects the subtracted balance.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — the full-lifecycle test drives cleared → deleted and asserts the sentinel memo reflects the subtracted balance.
 
 ### E24. Legacy `(FX rate: ...)` markers on tracked accounts
 
@@ -215,14 +216,14 @@ The marker records the source-currency amount at FX-conversion time. Any subsequ
 The first `ymca sync` after `track_local_balance: true` is added to an account creates the sentinel transaction by scanning the current delta and computing the initial balance. If the delta window does not cover historical transactions, users are expected to follow up with `ymca sync --rebuild-balance` to catch up.
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — asserts the sentinel appears on first apply run.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — asserts the sentinel appears on first apply run.
 
 ### E27. Tolerance check ≤ 0.01 stronger currency
 
 At the end of every sync run (delta or rebuild), YMCA compares the tracked source-currency balance to YNAB's reported `cleared_balance` in base currency. Drift is reported in the "stronger currency" (base when `divide_to_base: true`; source otherwise). Drift beyond `0.01` of that unit prints a warning and suggests `ymca sync --rebuild-balance`; the run itself still exits `0`.
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — exact-boundary, under, and over cases for both FX directions.
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — drift-free path under live data.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — drift-free path under live data.
 
 ### E28. Sentinel transaction detection and exclusion
 
@@ -240,7 +241,7 @@ The sentinel's YNAB transaction id is persisted in `state.yaml` under `plans.<al
 If the saved `sentinel_id` points at a transaction that YNAB reports as `deleted=true`, or whose payee has been renamed off `[YMCA] Tracked Balance`, the sync treats the sentinel as missing and queues a fresh `create_transaction`. The new id is then persisted in `state.yaml`, overwriting the stale one.
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_sentinel_create_and_update_carry_the_green_flag` plus the adapter's `test_ynab_client_create_transaction_forwards_flag_color_when_set` / `test_ynab_client_update_transaction_forwards_flag_color_when_set`; [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_fetches_saved_sentinel_when_delta_is_empty`, `test_build_prepared_conversion_recreates_sentinel_when_user_deletes_it`, `test_execute_conversion_persists_new_sentinel_ids_in_state`.
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py).
+- Integration: not covered live; unit tests above cover sentinel re-creation.
 
 ### E30. Partial-clear transfer pairs on tracked accounts
 
@@ -248,10 +249,10 @@ Transfer pairs share one YNAB memo, but local-currency tracking needs to know wh
 
 - Unit: [`tests/unit/test_memo.py`](../tests/unit/test_memo.py), [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py), [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
 - Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_transfer_tracking_partial_clear_workflow`.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — optional HKD↔HKD transfer with one leg cleared first, then both.
 
 ### E31. Legacy memo migration for split transfer parents
 
-The deprecated `migrate_legacy_fx_memos.py` helper must update split transfer parents through the single-row `update_transaction` path and preserve the full transaction payload while doing so. Otherwise YNAB can drop the effective pairing/split structure when the row is saved. The helper therefore carries forward the original amount, account/date/payee metadata, approval state, flag color, and subtransactions on that single update.
+The deprecated `migrate_legacy_fx_memos.py` helper cannot safely migrate split transfer parents through the YNAB API. Even a memo-only update on that row shape is not reliably supported, so those transactions remain manual-only in the YNAB web UI.
 
-- Unit: [`tests/unit/test_migrate_legacy_fx_memos.py`](../tests/unit/test_migrate_legacy_fx_memos.py) — `test_migrate_legacy_fx_memos_script_updates_split_transfer_with_single_update`.
-- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_migrate_legacy_split_transfer_workflow`.
+- Historical local-only coverage still exists in [`tests/unit/test_migrate_legacy_fx_memos.py`](../tests/unit/test_migrate_legacy_fx_memos.py) and [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py), but those fakes do not prove live YNAB API support for this row shape.

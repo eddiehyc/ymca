@@ -320,11 +320,15 @@ def _print_conversion_summary(outcome: object) -> None:
             new_text = format_balance_milliunits(entry.new_balance_milliunits)
             delta = entry.new_balance_milliunits - entry.prior_balance_milliunits
             delta_text = format_balance_milliunits(delta)
-            sentinel_action = "create" if entry.create_sentinel is not None else "update"
+            sentinel_suffix = ""
+            if entry.create_sentinel is not None:
+                sentinel_suffix = "; sentinel: create"
+            elif entry.update_sentinel is not None:
+                sentinel_suffix = "; sentinel: update"
             print(
                 f"- {entry.account_alias} ({entry.currency}): "
-                f"{prior_text} -> {new_text} (delta {delta_text}); "
-                f"sentinel: {sentinel_action}"
+                f"{prior_text} -> {new_text} (delta {delta_text})"
+                f"{sentinel_suffix}"
             )
             if entry.contributions:
                 print(f"  contributions: {len(entry.contributions)} row(s)")
