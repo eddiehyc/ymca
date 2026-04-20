@@ -5,16 +5,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from ymca.conversion import YnabGateway, resolve_bindings
-from ymca.errors import ConfigError, UserInputError
-from ymca.memo import has_fx_marker, has_legacy_fx_marker, replace_legacy_fx_marker
-from ymca.models import (
+from ._shared import (
     AccountConfig,
+    ConfigError,
     PlanConfig,
     RemoteTransactionDetail,
     ResolvedBindings,
     SkippedTransaction,
     TransactionUpdateRequest,
+    UserInputError,
+    YnabGateway,
+    has_fx_marker,
+    has_legacy_fx_marker,
+    replace_legacy_fx_marker,
+    resolve_bindings,
 )
 
 

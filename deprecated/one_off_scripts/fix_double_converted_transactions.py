@@ -18,12 +18,14 @@ from deprecated.one_off_scripts._double_conversion_fix import (
     apply_double_conversion_fix_plan,
     build_double_conversion_fix_plan,
 )
-from ymca.config import load_config
-from ymca.errors import YmcaError
-from ymca.memo import format_milliunits
-from ymca.paths import default_config_path
-from ymca.secrets import load_api_key
-from ymca.ynab_client import YnabClient
+from deprecated.one_off_scripts._shared import (
+    YmcaError,
+    YnabClient,
+    default_config_path,
+    format_milliunits,
+    load_api_key,
+    load_config,
+)
 
 
 def main(argv: list[str] | None = None) -> int:

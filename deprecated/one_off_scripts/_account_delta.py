@@ -3,9 +3,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ymca.conversion import YnabGateway, resolve_bindings
-from ymca.errors import ConfigError, UserInputError
-from ymca.models import AccountConfig, PlanConfig, RemoteTransaction, ResolvedBindings
+from ._shared import (
+    AccountConfig,
+    ConfigError,
+    PlanConfig,
+    RemoteTransaction,
+    ResolvedBindings,
+    UserInputError,
+    YnabGateway,
+    resolve_bindings,
+)
 
 
 @dataclass(frozen=True, slots=True)

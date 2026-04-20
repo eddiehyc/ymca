@@ -7,17 +7,22 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from ymca.conversion import YnabGateway, resolve_bindings
-from ymca.errors import ConfigError, UserInputError
-from ymca.memo import FX_MARKER_RE, LEGACY_FX_MARKER_RE, amount_text_to_milliunits, has_fx_marker
-from ymca.models import (
+from ._shared import (
+    FX_MARKER_RE,
+    LEGACY_FX_MARKER_RE,
     AccountConfig,
+    ConfigError,
     FxRule,
     PlanConfig,
     RemoteTransaction,
     ResolvedBindings,
     SkippedTransaction,
     TransactionUpdateRequest,
+    UserInputError,
+    YnabGateway,
+    amount_text_to_milliunits,
+    has_fx_marker,
+    resolve_bindings,
 )
 
 _SEPARATOR_PATTERN = r"(?:\||·)"

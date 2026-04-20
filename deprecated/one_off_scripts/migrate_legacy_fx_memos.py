@@ -18,11 +18,13 @@ from deprecated.one_off_scripts._legacy_memo_migration import (
     apply_legacy_memo_migration_plan,
     build_legacy_memo_migration_plan,
 )
-from ymca.config import load_config
-from ymca.errors import YmcaError
-from ymca.paths import default_config_path
-from ymca.secrets import load_api_key
-from ymca.ynab_client import YnabClient
+from deprecated.one_off_scripts._shared import (
+    YmcaError,
+    YnabClient,
+    default_config_path,
+    load_api_key,
+    load_config,
+)
 
 
 def main(argv: list[str] | None = None) -> int:

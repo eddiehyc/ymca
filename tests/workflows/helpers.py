@@ -201,8 +201,9 @@ class InMemoryGateway:
         if request.amount_milliunits is not None:
             transaction.amount_milliunits = request.amount_milliunits
         transaction.memo = request.memo
-        if request.flag_color is not None:
-            transaction.flag_color = request.flag_color
+        request_flag_color = getattr(request, "flag_color", None)
+        if request_flag_color is not None:
+            transaction.flag_color = request_flag_color
         transaction.modified_knowledge = self._server_knowledge
 
     def _include_transaction(
