@@ -297,7 +297,15 @@ def test_build_tracking_update_ignores_uncleared_new_transaction() -> None:
 
 def test_build_tracking_update_subtracts_counted_then_deleted() -> None:
     """A previously-counted row (``[FX+]``) that is now deleted gets subtracted
-    and has its memo flipped back to ``[FX]`` to record the uncount."""
+    from the balance.
+
+    YNAB refuses ``update_transactions`` calls targeting soft-deleted rows
+    (400 "transaction does not exist in this budget"), so the balance engine
+    must NOT emit a memo flip for a deleted transaction even though the
+    bracket technically disagrees with ``should_be_counted``. Deleted is a
+    terminal state in delta sync, so the stale ``[FX+]`` bracket on a dead
+    row is harmless.
+    """
     plan = _plan()
     memo = "Coffee | [FX+] -12.34 HKD (rate: 7.8 HKD/USD)"
     txn = _txn(
@@ -321,9 +329,69 @@ def test_build_tracking_update_subtracts_counted_then_deleted() -> None:
 
     assert result.new_balance_milliunits == 12340  # -(-12340) added back
     assert result.contributions[0].reason == "uncount"
-    assert len(result.memo_flips) == 1
-    assert "[FX]" in result.memo_flips[0].memo
-    assert "[FX+]" not in result.memo_flips[0].memo
+    # No memo flip emitted for a deleted row.
+    assert result.memo_flips == ()
+
+
+def test_build_tracking_update_skips_memo_flip_on_deleted_uncleared_counted() -> None:
+    """Same invariant as above but via a different transition path.
+
+    A row that had ``[FX+]`` + uncleared (an unusual state, but possible when
+    a user un-clears before deleting) should still be subtracted and left
+    alone memo-wise on delete. The point is that deleted rows are never
+    written to.
+    """
+    plan = _plan()
+    txn = _txn(
+        txn_id="t2",
+        amount_milliunits=-1582,
+        memo="[FX+] -12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="uncleared",
+        deleted=True,
+    )
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[txn],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+    assert result.memo_flips == ()
+    assert result.contributions[0].reason == "uncount"
+    assert result.new_balance_milliunits == 12340
+
+
+def test_rebuild_skips_memo_flip_on_deleted_row() -> None:
+    """Rebuild mode must also avoid writing to deleted rows even if their
+    bracket disagrees with the current should_be_counted state."""
+    plan = _plan()
+    # [FX+] on a deleted row: rebuild would want to flip to [FX], but we skip.
+    txn = _txn(
+        txn_id="deleted-counted",
+        amount_milliunits=-1582,
+        memo="[FX+] -12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="cleared",
+        deleted=True,
+    )
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[txn],
+        split_skipped_ids=set(),
+        rebuild=True,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+    # Deleted row is not counted in rebuild mode (should_be_counted=False),
+    # and the memo is left alone.
+    assert result.contributions == ()
+    assert result.memo_flips == ()
 
 
 def test_delta_adds_marked_uncounted_cleared_row_and_flips_to_counted() -> None:

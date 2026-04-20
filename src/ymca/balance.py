@@ -384,22 +384,29 @@ def _classify_delta(
     if amount is None:
         return None, None
 
-    new_memo = _rewrite_marker(
-        memo=transaction.memo,
-        is_current=is_current,
-        is_legacy=is_legacy,
-        counted=should_be_counted,
-        source_currency=account.currency,
-        pair_label=pair_label,
-        is_transfer=transaction.transfer_transaction_id is not None,
-    )
+    # YNAB refuses to touch soft-deleted rows via ``update_transactions``
+    # ("transaction does not exist in this budget"), so we skip the memo
+    # flip on deleted rows. The balance side still records the ``uncount``
+    # contribution; deleted rows are a terminal state in delta sync and
+    # won't re-appear in future deltas, so the stale ``[FX+]`` marker on
+    # a dead row is harmless.
     memo_flip: TransactionUpdateRequest | None = None
-    if new_memo is not None and new_memo != transaction.memo:
-        memo_flip = TransactionUpdateRequest(
-            transaction_id=transaction.id,
-            amount_milliunits=None,
-            memo=new_memo,
+    if not transaction.deleted:
+        new_memo = _rewrite_marker(
+            memo=transaction.memo,
+            is_current=is_current,
+            is_legacy=is_legacy,
+            counted=should_be_counted,
+            source_currency=account.currency,
+            pair_label=pair_label,
+            is_transfer=transaction.transfer_transaction_id is not None,
         )
+        if new_memo is not None and new_memo != transaction.memo:
+            memo_flip = TransactionUpdateRequest(
+                transaction_id=transaction.id,
+                amount_milliunits=None,
+                memo=new_memo,
+            )
 
     if should_be_counted and not was_counted:
         return (
@@ -445,19 +452,22 @@ def _classify_rebuild(
     moves the balance, so legacy markers get migrated and stale ``[FX+]``
     brackets on uncleared rows get flipped back to ``[FX]``.
     """
-    # Marker flip (independent of the balance direction).
+    # Marker flip (independent of the balance direction). YNAB refuses
+    # updates to soft-deleted rows, so we never emit a flip for ``deleted``
+    # transactions even if their bracket disagrees with ``should_be_counted``.
     new_memo = None
-    if is_current and was_counted != should_be_counted:
-        new_memo = flip_fx_marker_counted(
-            transaction.memo or "", counted=should_be_counted
-        )
-    elif is_legacy:
-        new_memo = replace_legacy_fx_marker(
-            transaction.memo or "",
-            pair_label_for_currency={account.currency: pair_label},
-            transfer=transaction.transfer_transaction_id is not None,
-            counted=should_be_counted,
-        )
+    if not transaction.deleted:
+        if is_current and was_counted != should_be_counted:
+            new_memo = flip_fx_marker_counted(
+                transaction.memo or "", counted=should_be_counted
+            )
+        elif is_legacy:
+            new_memo = replace_legacy_fx_marker(
+                transaction.memo or "",
+                pair_label_for_currency={account.currency: pair_label},
+                transfer=transaction.transfer_transaction_id is not None,
+                counted=should_be_counted,
+            )
 
     memo_flip: TransactionUpdateRequest | None = None
     if new_memo is not None and new_memo != (transaction.memo or ""):
