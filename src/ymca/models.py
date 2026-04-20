@@ -114,6 +114,7 @@ class RemoteTransaction:
     deleted: bool
     payee_name: str | None = None
     cleared: ClearedStatus = "uncleared"
+    paired_transfer_counted: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

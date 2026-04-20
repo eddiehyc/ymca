@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Literal
 
 _THOUSAND = Decimal("1000")
 _TWO_PLACES = Decimal("0.01")
@@ -17,14 +18,19 @@ _NORMALIZE_AMOUNT_RE = re.compile(
 )
 
 FX_MARKER_RE = re.compile(
-    r"\[FX(?P<counted>\+)?\]\s+"
+    r"\[FX(?P<state>[\+\u2192\u2190])?\]\s+"
     rf"(?P<amount>{_AMOUNT_PATTERN})\s+"
     r"(?P<currency>[A-Z]{3})\s+"
     r"\(rate:\s*(?P<rate>[0-9]+(?:\.[0-9]+)?)\s+(?P<pair>[A-Z]{3}/[A-Z]{3})\)"
 )
-"""Matches either the ``[FX]`` (uncounted) or ``[FX+]`` (counted) current-form
-FX marker. The ``counted`` capture group is ``"+"`` for ``[FX+]`` and ``None``
-for ``[FX]``; see §12 of ``docs/spec.md`` for the semantics.
+"""Matches the current-form FX marker.
+
+The bracket encodes the transfer/local-balance state:
+
+* ``[FX]``  — uncounted.
+* ``[FX+]`` — counted (non-transfer), or both transfer sides counted.
+* ``[FX→]`` — only the transfer outflow side counted.
+* ``[FX←]`` — only the transfer inflow side counted.
 """
 LEGACY_FX_MARKER_RE = re.compile(
     rf"(?P<amount>{_AMOUNT_PATTERN})\s+"
@@ -62,6 +68,8 @@ _LEGACY_SENTINEL_PATTERN = (
 )
 LEGACY_SENTINEL_MEMO_RE = re.compile(_LEGACY_SENTINEL_PATTERN)
 
+TransferMarkerState = Literal["none", "outflow", "inflow", "both"]
+
 
 def has_fx_marker(memo: str | None) -> bool:
     if memo is None:
@@ -78,7 +86,24 @@ def has_fx_counted_marker(memo: str | None) -> bool:
     if memo is None:
         return False
     match = FX_MARKER_RE.search(memo)
-    return match is not None and match.group("counted") == "+"
+    return match is not None and match.group("state") == "+"
+
+
+def fx_marker_state(memo: str | None) -> TransferMarkerState | None:
+    """Return the current-form marker state encoded in ``memo``."""
+    if memo is None:
+        return None
+    match = FX_MARKER_RE.search(memo)
+    if match is None:
+        return None
+    state_token = match.group("state")
+    if state_token == "+":
+        return "both"
+    if state_token == "→":
+        return "outflow"
+    if state_token == "←":
+        return "inflow"
+    return "none"
 
 
 def has_legacy_fx_marker(memo: str | None) -> bool:
@@ -95,6 +120,7 @@ def build_fx_marker(
     pair_label: str,
     transfer_prefix: bool = False,
     counted: bool = False,
+    transfer_state: TransferMarkerState | None = None,
 ) -> str:
     """Build the current-form FX marker.
 
@@ -108,7 +134,10 @@ def build_fx_marker(
         source_amount_milliunits,
         transfer_prefix=transfer_prefix,
     )
-    bracket = "[FX+]" if counted else "[FX]"
+    marker_state = transfer_state
+    if marker_state is None:
+        marker_state = "both" if counted else "none"
+    bracket = _fx_bracket_for_state(marker_state)
     return f"{bracket} {source_amount} {source_currency} (rate: {rate_text} {pair_label})"
 
 
@@ -124,8 +153,25 @@ def flip_fx_marker_counted(memo: str, *, counted: bool) -> str | None:
     match = FX_MARKER_RE.search(memo)
     if match is None:
         return None
-    current_bracket = "[FX+]" if match.group("counted") == "+" else "[FX]"
+    current_bracket = _fx_bracket_for_state(fx_marker_state(memo) or "none")
     new_bracket = "[FX+]" if counted else "[FX]"
+    if current_bracket == new_bracket:
+        return memo
+    start = match.start()
+    return memo[:start] + new_bracket + memo[start + len(current_bracket) :]
+
+
+def rewrite_fx_marker_state(
+    memo: str,
+    *,
+    transfer_state: TransferMarkerState,
+) -> str | None:
+    """Rewrite the current-form FX bracket in ``memo`` to ``transfer_state``."""
+    match = FX_MARKER_RE.search(memo)
+    if match is None:
+        return None
+    current_bracket = _fx_bracket_for_state(fx_marker_state(memo) or "none")
+    new_bracket = _fx_bracket_for_state(transfer_state)
     if current_bracket == new_bracket:
         return memo
     start = match.start()
@@ -144,6 +190,7 @@ def replace_legacy_fx_marker(
     pair_label_for_currency: dict[str, str],
     transfer: bool,
     counted: bool = False,
+    transfer_state: TransferMarkerState | None = None,
 ) -> str | None:
     """Rewrite a legacy ``(FX rate: ...)`` marker into the current form.
 
@@ -169,6 +216,7 @@ def replace_legacy_fx_marker(
         rate_text=match.group("rate"),
         pair_label=pair_label,
         counted=counted,
+        transfer_state=transfer_state,
     )
     before = _trim_legacy_separator_suffix(memo[: match.start()])
     after = _trim_legacy_separator_prefix(memo[match.end() :])
@@ -187,9 +235,13 @@ def build_fx_marker_from_amount_text(
     rate_text: str,
     pair_label: str,
     counted: bool = False,
+    transfer_state: TransferMarkerState | None = None,
 ) -> str:
     normalized_amount = _normalize_amount_text(amount_text)
-    bracket = "[FX+]" if counted else "[FX]"
+    marker_state = transfer_state
+    if marker_state is None:
+        marker_state = "both" if counted else "none"
+    bracket = _fx_bracket_for_state(marker_state)
     return f"{bracket} {normalized_amount} {source_currency} (rate: {rate_text} {pair_label})"
 
 
@@ -416,6 +468,42 @@ def memo_marker_currency(memo: str | None) -> str | None:
     return None
 
 
+def marker_counts_transaction(
+    memo: str | None,
+    *,
+    direction_sign: int,
+    is_transfer: bool,
+) -> bool:
+    """Return whether the current-form marker counts this transaction."""
+    if not is_transfer:
+        return has_fx_counted_marker(memo)
+
+    state = fx_marker_state(memo)
+    if state in {None, "none"}:
+        return False
+    if state == "both":
+        return True
+    if direction_sign < 0:
+        return state == "outflow"
+    return state == "inflow"
+
+
+def desired_transfer_marker_state(
+    *,
+    direction_sign: int,
+    current_side_counted: bool,
+    paired_side_counted: bool,
+) -> TransferMarkerState:
+    """Return the shared transfer marker state for the pair."""
+    if current_side_counted and paired_side_counted:
+        return "both"
+    if not current_side_counted and not paired_side_counted:
+        return "none"
+    if current_side_counted:
+        return "outflow" if direction_sign < 0 else "inflow"
+    return "inflow" if direction_sign < 0 else "outflow"
+
+
 def _format_sentinel_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -423,3 +511,13 @@ def _format_sentinel_datetime(value: datetime) -> str:
 def _parse_sentinel_datetime(text: str) -> datetime:
     normalized = text.rstrip("Z")
     return datetime.fromisoformat(normalized)
+
+
+def _fx_bracket_for_state(state: TransferMarkerState) -> str:
+    if state == "both":
+        return "[FX+]"
+    if state == "outflow":
+        return "[FX→]"
+    if state == "inflow":
+        return "[FX←]"
+    return "[FX]"

@@ -278,6 +278,134 @@ def test_local_currency_tracking_lifecycle_workflow(
     assert len(gateway.updates) == writes_before_quiet_run
 
 
+def test_transfer_tracking_partial_clear_workflow(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    state_path = tmp_path / "state.yaml"
+    config_path.write_text(
+        """version: 1
+secrets:
+  api_key_file: ./ynab_api_key
+plan:
+  alias: personal
+  name: Example Plan
+  base_currency: USD
+accounts:
+  wallet_out:
+    name: Wallet Out
+    currency: HKD
+    enabled: true
+    track_local_balance: true
+  wallet_in:
+    name: Wallet In
+    currency: HKD
+    enabled: true
+    track_local_balance: true
+fx_rates:
+  HKD:
+    rate: "7.8"
+    divide_to_base: true
+""",
+        encoding="utf-8",
+    )
+    gateway = InMemoryGateway(
+        plan_id="plan-1",
+        plan_name="Example Plan",
+        accounts=(
+            SimulatedAccount(id="acct-out", name="Wallet Out"),
+            SimulatedAccount(id="acct-in", name="Wallet In"),
+        ),
+        transactions=(
+            SimulatedTransaction(
+                id="txn-out",
+                date=date(2026, 4, 10),
+                amount_milliunits=-12340,
+                memo="Move",
+                account_id="acct-out",
+                transfer_account_id="acct-in",
+                transfer_transaction_id="txn-in",
+                payee_name="Move",
+                cleared="cleared",
+            ),
+            SimulatedTransaction(
+                id="txn-in",
+                date=date(2026, 4, 10),
+                amount_milliunits=12340,
+                memo="Move",
+                account_id="acct-in",
+                transfer_account_id="acct-out",
+                transfer_transaction_id="txn-out",
+                payee_name="Move",
+                cleared="uncleared",
+            ),
+        ),
+    )
+    _patch_cli_gateway(
+        monkeypatch,
+        gateway=gateway,
+        config_path=config_path,
+        state_path=state_path,
+    )
+
+    first_exit = main(["sync", "--apply", "--bootstrap-since", "2026-04-01"])
+    first_output = capsys.readouterr()
+
+    assert first_exit == 0
+    assert "Sentinel writes: 2 (2 created)" in first_output.out
+    assert gateway.detail("txn-out").memo == "Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert gateway.detail("txn-in").memo == "Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+
+    gateway.set_cleared("txn-in", "cleared")
+
+    second_exit = main(["sync", "--apply"])
+    second_output = capsys.readouterr()
+
+    assert second_exit == 0
+    assert "Sentinel writes:" in second_output.out
+    assert gateway.detail("txn-out").memo == "Move | [FX+] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert gateway.detail("txn-in").memo == "Move | [FX+] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert "[YMCA-BAL] HKD -12.34" in (
+        gateway.find_active_transaction_by_payee(
+            SENTINEL_PAYEE_NAME,
+            account_id="acct-out",
+        ).memo
+        or ""
+    )
+    assert "[YMCA-BAL] HKD 12.34" in (
+        gateway.find_active_transaction_by_payee(
+            SENTINEL_PAYEE_NAME,
+            account_id="acct-in",
+        ).memo
+        or ""
+    )
+
+    gateway.set_cleared("txn-in", "uncleared")
+
+    third_exit = main(["sync", "--apply"])
+    capsys.readouterr()
+
+    assert third_exit == 0
+    assert gateway.detail("txn-out").memo == "Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert gateway.detail("txn-in").memo == "Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert "[YMCA-BAL] HKD -12.34" in (
+        gateway.find_active_transaction_by_payee(
+            SENTINEL_PAYEE_NAME,
+            account_id="acct-out",
+        ).memo
+        or ""
+    )
+    assert "[YMCA-BAL] HKD 0.00" in (
+        gateway.find_active_transaction_by_payee(
+            SENTINEL_PAYEE_NAME,
+            account_id="acct-in",
+        ).memo
+        or ""
+    )
+
+
 def test_migrate_legacy_memo_workflow(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

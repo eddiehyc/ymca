@@ -90,6 +90,7 @@ def _txn(
     deleted: bool = False,
     transfer_id: str | None = None,
     payee_name: str | None = None,
+    paired_transfer_counted: bool | None = None,
 ) -> RemoteTransaction:
     return RemoteTransaction(
         id=txn_id,
@@ -102,6 +103,7 @@ def _txn(
         deleted=deleted,
         payee_name=payee_name,
         cleared=cleared,  # type: ignore[arg-type]
+        paired_transfer_counted=paired_transfer_counted,
     )
 
 
@@ -429,6 +431,91 @@ def test_delta_adds_marked_uncounted_cleared_row_and_flips_to_counted() -> None:
     assert flip.transaction_id == "reclassified"
     assert "[FX+]" in flip.memo
     assert flip.amount_milliunits is None  # amount must not be touched
+
+
+def test_delta_transfer_outflow_leaves_directional_marker_when_pair_is_partial() -> None:
+    plan = _plan()
+    transfer = _txn(
+        txn_id="transfer-out",
+        amount_milliunits=-1582,
+        memo="Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="cleared",
+        transfer_id="transfer-in",
+        paired_transfer_counted=False,
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[transfer],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert result.contributions == ()
+    assert result.memo_flips == ()
+
+
+def test_delta_transfer_inflow_flip_promotes_arrow_marker_to_both_counted() -> None:
+    plan = _plan()
+    transfer = _txn(
+        txn_id="transfer-in",
+        amount_milliunits=1582,
+        memo="Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="cleared",
+        transfer_id="transfer-out",
+        paired_transfer_counted=True,
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[transfer],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert len(result.contributions) == 1
+    assert result.contributions[0].signed_source_milliunits == 12340
+    assert len(result.memo_flips) == 1
+    assert "[FX+]" in result.memo_flips[0].memo
+
+
+def test_delta_transfer_unclearing_demotes_both_counted_marker_to_arrow() -> None:
+    plan = _plan()
+    transfer = _txn(
+        txn_id="transfer-in",
+        amount_milliunits=1582,
+        memo="Move | [FX+] +/-12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="uncleared",
+        transfer_id="transfer-out",
+        paired_transfer_counted=True,
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[transfer],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert len(result.contributions) == 1
+    assert result.contributions[0].signed_source_milliunits == -12340
+    assert len(result.memo_flips) == 1
+    assert "[FX→]" in result.memo_flips[0].memo
 
 
 def test_delta_cleared_to_reconciled_is_noop_on_counted_row() -> None:

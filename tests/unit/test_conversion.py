@@ -486,6 +486,108 @@ def test_build_prepared_conversion_processes_transfer_once_with_plus_minus_prefi
     assert prepared.skipped[0].reason == "paired-transfer"
 
 
+def test_build_prepared_conversion_marks_partial_tracked_transfer_with_arrow() -> None:
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(
+                alias="wallet_out",
+                name="Wallet Out",
+                currency="HKD",
+                enabled=True,
+                track_local_balance=True,
+            ),
+            AccountConfig(
+                alias="wallet_in",
+                name="Wallet In",
+                currency="HKD",
+                enabled=True,
+                track_local_balance=True,
+            ),
+        ),
+        fx_rates={"HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True)},
+    )
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(id="acct-out", name="Wallet Out", deleted=False),
+                    RemoteAccount(id="acct-in", name="Wallet In", deleted=False),
+                ),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={
+            "txn-out": RemoteTransactionDetail(
+                id="txn-out",
+                date=date(2026, 4, 10),
+                amount_milliunits=-12340,
+                memo="Move money",
+                account_id="acct-out",
+                transfer_account_id="acct-in",
+                transfer_transaction_id="txn-in",
+                deleted=False,
+                subtransaction_count=0,
+                cleared="cleared",
+            )
+        },
+        transaction_snapshots_by_account={
+            "acct-out": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-out",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=-12340,
+                            memo="Move money",
+                            account_id="acct-out",
+                            transfer_account_id="acct-in",
+                            transfer_transaction_id="txn-in",
+                            deleted=False,
+                            cleared="cleared",
+                        ),
+                    ),
+                    server_knowledge=44,
+                )
+            ],
+            "acct-in": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-in",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=12340,
+                            memo="Move money",
+                            account_id="acct-in",
+                            transfer_account_id="acct-out",
+                            transfer_transaction_id="txn-out",
+                            deleted=False,
+                            cleared="uncleared",
+                        ),
+                    ),
+                    server_knowledge=44,
+                )
+            ],
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert len(prepared.updates) == 1
+    assert prepared.updates[0].transaction_id == "txn-out"
+    assert prepared.updates[0].new_memo == "Move money | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+
+
 def test_build_prepared_conversion_keeps_zero_amount_transactions() -> None:
     plan = PlanConfig(
         alias="personal",

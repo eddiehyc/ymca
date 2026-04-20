@@ -11,12 +11,15 @@ from ymca.memo import (
     build_fx_marker,
     build_fx_marker_from_amount_text,
     build_sentinel_memo,
+    desired_transfer_marker_state,
     format_balance_milliunits,
     format_memo_milliunits,
     format_milliunits,
+    fx_marker_state,
     has_fx_marker,
     has_legacy_fx_marker,
     is_sentinel_payee,
+    marker_counts_transaction,
     memo_marker_currency,
     memo_marker_has_transfer_prefix,
     parse_sentinel_memo,
@@ -60,6 +63,28 @@ def test_build_fx_marker_for_transfer_uses_literal_plus_minus_prefix() -> None:
     )
 
     assert marker == "[FX] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+
+
+def test_build_fx_marker_supports_directional_transfer_states() -> None:
+    outflow_only = build_fx_marker(
+        source_amount_milliunits=-12340,
+        source_currency="HKD",
+        rate_text="7.8",
+        pair_label="HKD/USD",
+        transfer_prefix=True,
+        transfer_state="outflow",
+    )
+    inflow_only = build_fx_marker(
+        source_amount_milliunits=12340,
+        source_currency="HKD",
+        rate_text="7.8",
+        pair_label="HKD/USD",
+        transfer_prefix=True,
+        transfer_state="inflow",
+    )
+
+    assert outflow_only == "[FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
+    assert inflow_only == "[FX←] +/-12.34 HKD (rate: 7.8 HKD/USD)"
 
 
 def test_build_fx_marker_uses_thousands_delimiter() -> None:
@@ -390,6 +415,39 @@ def test_source_amount_milliunits_from_marker_uses_fallback_sign_for_plus_minus(
     memo = "Move | [FX] +/-12.34 HKD (rate: 7.8 HKD/USD)"
     assert source_amount_milliunits_from_marker(memo, fallback_sign=-1) == -12340
     assert source_amount_milliunits_from_marker(memo, fallback_sign=1) == 12340
+
+
+def test_fx_marker_state_and_marker_counts_transaction_support_arrows() -> None:
+    assert fx_marker_state("[FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)") == "outflow"
+    assert fx_marker_state("[FX←] +/-12.34 HKD (rate: 7.8 HKD/USD)") == "inflow"
+    assert marker_counts_transaction(
+        "[FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)",
+        direction_sign=-1,
+        is_transfer=True,
+    )
+    assert not marker_counts_transaction(
+        "[FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)",
+        direction_sign=1,
+        is_transfer=True,
+    )
+
+
+def test_desired_transfer_marker_state_tracks_each_side_independently() -> None:
+    assert desired_transfer_marker_state(
+        direction_sign=-1,
+        current_side_counted=True,
+        paired_side_counted=False,
+    ) == "outflow"
+    assert desired_transfer_marker_state(
+        direction_sign=1,
+        current_side_counted=False,
+        paired_side_counted=True,
+    ) == "outflow"
+    assert desired_transfer_marker_state(
+        direction_sign=1,
+        current_side_counted=True,
+        paired_side_counted=True,
+    ) == "both"
 
 
 def test_source_amount_milliunits_from_marker_returns_none_without_marker() -> None:

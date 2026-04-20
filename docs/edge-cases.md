@@ -5,6 +5,7 @@ Every edge case is listed here with the tests that cover it. When a new edge cas
 Legend:
 
 - **Unit**: file/test under `tests/unit/`.
+- **Offline workflow**: file/test under `tests/workflows/`.
 - **Integration**: file/test under `tests/integration/`.
 
 The "Required by AGENTS.md" section covers the edge cases explicitly called out in `AGENTS.md §Testing Requirements`. The "Additional" section covers cases discovered in the codebase that extend beyond that list.
@@ -240,3 +241,10 @@ If the saved `sentinel_id` points at a transaction that YNAB reports as `deleted
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_sentinel_create_and_update_carry_the_green_flag` plus the adapter's `test_ynab_client_create_transaction_forwards_flag_color_when_set` / `test_ynab_client_update_transaction_forwards_flag_color_when_set`; [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_fetches_saved_sentinel_when_delta_is_empty`, `test_build_prepared_conversion_recreates_sentinel_when_user_deletes_it`, `test_execute_conversion_persists_new_sentinel_ids_in_state`.
 - Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py).
+
+### E30. Partial-clear transfer pairs on tracked accounts
+
+Transfer pairs share one YNAB memo, but local-currency tracking needs to know whether neither side, one side, or both sides have already been counted. YMCA therefore uses four transfer-aware marker states: `[FX]` for neither side counted, `[FX+]` for both, `[FX→]` when only the outflow side is counted, and `[FX←]` when only the inflow side is counted. When the second side clears, the marker promotes to `[FX+]`; when one side is un-cleared later, it demotes back to the directional form without losing the paired side's counted state.
+
+- Unit: [`tests/unit/test_memo.py`](../tests/unit/test_memo.py), [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py), [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
+- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_transfer_tracking_partial_clear_workflow`.

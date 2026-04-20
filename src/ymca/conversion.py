@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Protocol
@@ -11,6 +12,7 @@ from .errors import ApiError, ConfigError, UserInputError
 from .memo import (
     append_fx_marker,
     build_fx_marker,
+    desired_transfer_marker_state,
     has_fx_marker,
     has_legacy_fx_marker,
     is_sentinel_payee,
@@ -175,6 +177,12 @@ def build_prepared_conversion(
         sync_request=sync_request,
         account_sync_requests=account_sync_requests,
     )
+    fetched_items = _attach_transfer_pair_counted_state(
+        plan=plan,
+        bindings=bindings,
+        gateway=gateway,
+        items=fetched_items,
+    )
 
     updates: list[PreparedUpdate] = []
     skipped: list[SkippedTransaction] = []
@@ -238,7 +246,14 @@ def build_prepared_conversion(
             )
             continue
 
-        updates.append(_prepare_update(plan, account, detail))
+        updates.append(
+            _prepare_update(
+                plan,
+                account,
+                detail,
+                paired_transfer_counted=transaction.paired_transfer_counted,
+            )
+        )
 
     split_skipped_ids = {
         entry.transaction_id for entry in skipped if entry.reason == "split"
@@ -528,6 +543,8 @@ def _prepare_update(
     plan: PlanConfig,
     account: AccountConfig,
     transaction: RemoteTransactionDetail,
+    *,
+    paired_transfer_counted: bool | None = None,
 ) -> PreparedUpdate:
     is_transfer = transaction.transfer_account_id is not None
     fx_rule = plan.fx_rates[account.currency]
@@ -548,13 +565,22 @@ def _prepare_update(
     # with the historic ``[FX]`` form.
     is_cleared = transaction.cleared in ("cleared", "reconciled")
     counted = account.track_local_balance and is_cleared and not transaction.deleted
+    transfer_state = None
+    if is_transfer and transaction.amount_milliunits != 0:
+        direction_sign = 1 if transaction.amount_milliunits > 0 else -1
+        transfer_state = desired_transfer_marker_state(
+            direction_sign=direction_sign,
+            current_side_counted=counted,
+            paired_side_counted=bool(paired_transfer_counted),
+        )
     marker = build_fx_marker(
         source_amount_milliunits=transaction.amount_milliunits,
         source_currency=account.currency,
         rate_text=fx_rule.rate_text,
         pair_label=pair_label,
         transfer_prefix=is_transfer,
-        counted=counted,
+        counted=counted or bool(paired_transfer_counted),
+        transfer_state=transfer_state,
     )
     new_memo = append_fx_marker(transaction.memo, marker)
     request = TransactionUpdateRequest(
@@ -720,3 +746,79 @@ def _refresh_server_knowledge_for_accounts(
         )
         refreshed_knowledge = max(refreshed_knowledge, snapshot.server_knowledge)
     return refreshed_knowledge
+
+
+def _attach_transfer_pair_counted_state(
+    *,
+    plan: PlanConfig,
+    bindings: ResolvedBindings,
+    gateway: YnabGateway,
+    items: list[tuple[AccountConfig, RemoteTransaction]],
+) -> list[tuple[AccountConfig, RemoteTransaction]]:
+    tracked_account_ids = {
+        bindings.account_ids[account.alias]
+        for account in plan.accounts
+        if account.track_local_balance
+    }
+    transactions_by_id = {transaction.id: transaction for _, transaction in items}
+    detail_cache: dict[str, RemoteTransactionDetail] = {}
+    enriched: list[tuple[AccountConfig, RemoteTransaction]] = []
+    for account, transaction in items:
+        paired_counted = _paired_transfer_counted_state(
+            gateway=gateway,
+            plan_id=bindings.plan_id,
+            transaction=transaction,
+            tracked_account_ids=tracked_account_ids,
+            transactions_by_id=transactions_by_id,
+            detail_cache=detail_cache,
+        )
+        if paired_counted == transaction.paired_transfer_counted:
+            enriched.append((account, transaction))
+            continue
+        enriched.append(
+            (
+                account,
+                replace(transaction, paired_transfer_counted=paired_counted),
+            )
+        )
+    return enriched
+
+
+def _paired_transfer_counted_state(
+    *,
+    gateway: YnabGateway,
+    plan_id: str,
+    transaction: RemoteTransaction,
+    tracked_account_ids: set[str],
+    transactions_by_id: Mapping[str, RemoteTransaction],
+    detail_cache: dict[str, RemoteTransactionDetail],
+) -> bool | None:
+    paired_account_id = transaction.transfer_account_id
+    paired_transaction_id = transaction.transfer_transaction_id
+    if paired_account_id is None or paired_transaction_id is None:
+        return None
+    if paired_account_id not in tracked_account_ids:
+        return False
+
+    paired_transaction = transactions_by_id.get(paired_transaction_id)
+    if paired_transaction is not None:
+        return _should_count_remote_transaction(paired_transaction)
+
+    paired_detail = detail_cache.get(paired_transaction_id)
+    if paired_detail is None:
+        try:
+            paired_detail = gateway.get_transaction_detail(plan_id, paired_transaction_id)
+        except ApiError as exc:
+            if _is_not_found_api_error(exc):
+                return False
+            raise
+        detail_cache[paired_transaction_id] = paired_detail
+    return _should_count_remote_detail(paired_detail)
+
+
+def _should_count_remote_transaction(transaction: RemoteTransaction) -> bool:
+    return transaction.cleared in ("cleared", "reconciled") and not transaction.deleted
+
+
+def _should_count_remote_detail(transaction: RemoteTransactionDetail) -> bool:
+    return transaction.cleared in ("cleared", "reconciled") and not transaction.deleted

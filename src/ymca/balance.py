@@ -5,10 +5,12 @@ It computes per-account balance contributions for each run, detects the
 in-account sentinel transaction, and produces sentinel create/update requests
 plus a tolerance-check summary.
 
-Design follows ``docs/spec.md`` §12. The classifier is driven by a dual-marker
-model: the FX memo carries either ``[FX]`` (converted but uncounted) or
-``[FX+]`` (converted and already added to the tracked balance). The engine
-compares ``was_counted`` (derived from the bracket) against
+Design follows ``docs/spec.md`` §12. The classifier is driven by a memo-ledger
+model: the FX memo itself records whether the current side of the transaction
+has already been added to the tracked balance. Non-transfer rows use
+``[FX]`` / ``[FX+]``. Transfer rows may also use ``[FX→]`` / ``[FX←]`` so the
+shared memo can preserve partial-clear state across both transfer legs. The
+engine compares ``was_counted`` (derived from the bracket) against
 ``should_be_counted`` (derived from the current cleared/deleted YNAB state)
 and acts on the four-way truth table:
 
@@ -34,14 +36,17 @@ from .memo import (
     SENTINEL_FLAG_COLOR,
     SENTINEL_PAYEE_NAME,
     build_sentinel_memo,
+    desired_transfer_marker_state,
     flip_fx_marker_counted,
     has_fx_counted_marker,
     has_fx_marker,
     has_legacy_fx_marker,
     is_sentinel_payee,
+    marker_counts_transaction,
     memo_marker_has_transfer_prefix,
     parse_sentinel_memo,
     replace_legacy_fx_marker,
+    rewrite_fx_marker_state,
     source_amount_milliunits_from_marker,
 )
 from .models import (
@@ -294,7 +299,16 @@ def _classify_transaction(
     """
     is_current = has_fx_marker(transaction.memo)
     is_legacy = (not is_current) and has_legacy_fx_marker(transaction.memo)
-    was_counted = has_fx_counted_marker(transaction.memo)
+    is_transfer = transaction.transfer_transaction_id is not None
+    if is_current and is_transfer and transaction.amount_milliunits != 0:
+        direction_sign = 1 if transaction.amount_milliunits > 0 else -1
+        was_counted = marker_counts_transaction(
+            transaction.memo,
+            direction_sign=direction_sign,
+            is_transfer=True,
+        )
+    else:
+        was_counted = has_fx_counted_marker(transaction.memo)
     is_cleared = transaction.cleared in ("cleared", "reconciled")
     should_be_counted = is_cleared and not transaction.deleted
 
@@ -385,6 +399,7 @@ def _classify_delta(
     memo_flip: TransactionUpdateRequest | None = None
     if not transaction.deleted:
         new_memo = _rewrite_marker(
+            transaction=transaction,
             memo=transaction.memo,
             is_current=is_current,
             is_legacy=is_legacy,
@@ -450,15 +465,26 @@ def _classify_rebuild(
     new_memo = None
     if not transaction.deleted:
         if is_current and was_counted != should_be_counted:
-            new_memo = flip_fx_marker_counted(
-                transaction.memo or "", counted=should_be_counted
+            new_memo = _rewrite_marker(
+                transaction=transaction,
+                memo=transaction.memo,
+                is_current=True,
+                is_legacy=False,
+                counted=should_be_counted,
+                source_currency=account.currency,
+                pair_label=pair_label,
+                is_transfer=transaction.transfer_transaction_id is not None,
             )
         elif is_legacy:
-            new_memo = replace_legacy_fx_marker(
-                transaction.memo or "",
-                pair_label_for_currency={account.currency: pair_label},
-                transfer=transaction.transfer_transaction_id is not None,
+            new_memo = _rewrite_marker(
+                transaction=transaction,
+                memo=transaction.memo,
+                is_current=False,
+                is_legacy=True,
                 counted=should_be_counted,
+                source_currency=account.currency,
+                pair_label=pair_label,
+                is_transfer=transaction.transfer_transaction_id is not None,
             )
 
     memo_flip: TransactionUpdateRequest | None = None
@@ -504,6 +530,7 @@ def _classify_rebuild(
 
 def _rewrite_marker(
     *,
+    transaction: RemoteTransaction,
     memo: str | None,
     is_current: bool,
     is_legacy: bool,
@@ -513,11 +540,28 @@ def _rewrite_marker(
     is_transfer: bool,
 ) -> str | None:
     """Produce the memo with the FX marker flipped to the requested counted
-    state. Handles both the current ``[FX]``/``[FX+]`` form and legacy
-    ``(FX rate: ...)`` migration. Returns ``None`` when there is nothing to
-    rewrite.
+    state. Handles both the current transfer-aware bracket forms
+    (``[FX]``, ``[FX+]``, ``[FX→]``, ``[FX←]``) and legacy ``(FX rate: ...)``
+    migration. Returns ``None`` when there is nothing to rewrite.
     """
     source_memo = memo or ""
+    if is_transfer and transaction.amount_milliunits != 0:
+        direction_sign = 1 if transaction.amount_milliunits > 0 else -1
+        transfer_state = desired_transfer_marker_state(
+            direction_sign=direction_sign,
+            current_side_counted=counted,
+            paired_side_counted=bool(transaction.paired_transfer_counted),
+        )
+        if is_current:
+            return rewrite_fx_marker_state(source_memo, transfer_state=transfer_state)
+        if is_legacy:
+            return replace_legacy_fx_marker(
+                source_memo,
+                pair_label_for_currency={source_currency: pair_label},
+                transfer=is_transfer,
+                transfer_state=transfer_state,
+            )
+        return None
     if is_current:
         return flip_fx_marker_counted(source_memo, counted=counted)
     if is_legacy:

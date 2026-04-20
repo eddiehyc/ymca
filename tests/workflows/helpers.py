@@ -173,6 +173,14 @@ class InMemoryGateway:
     def detail(self, transaction_id: str) -> RemoteTransactionDetail:
         return self.get_transaction_detail(self.plan_id, transaction_id)
 
+    def set_cleared(self, transaction_id: str, cleared: ClearedStatus) -> None:
+        transaction = self._transactions_by_id.get(transaction_id)
+        if transaction is None or transaction.deleted:
+            raise AssertionError(f"Unknown active transaction {transaction_id!r}.")
+        self._server_knowledge += 1
+        transaction.cleared = cleared
+        transaction.modified_knowledge = self._server_knowledge
+
     def find_active_transaction_by_payee(
         self, payee_name: str, *, account_id: str | None = None
     ) -> RemoteTransactionDetail:
@@ -205,6 +213,17 @@ class InMemoryGateway:
         if request_flag_color is not None:
             transaction.flag_color = request_flag_color
         transaction.modified_knowledge = self._server_knowledge
+
+        paired_transaction_id = transaction.transfer_transaction_id
+        if paired_transaction_id is None:
+            return
+        paired_transaction = self._transactions_by_id.get(paired_transaction_id)
+        if paired_transaction is None or paired_transaction.deleted:
+            return
+        paired_transaction.memo = request.memo
+        if request.amount_milliunits is not None:
+            paired_transaction.amount_milliunits = -request.amount_milliunits
+        paired_transaction.modified_knowledge = self._server_knowledge
 
     def _include_transaction(
         self,
