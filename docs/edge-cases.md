@@ -248,3 +248,10 @@ Transfer pairs share one YNAB memo, but local-currency tracking needs to know wh
 
 - Unit: [`tests/unit/test_memo.py`](../tests/unit/test_memo.py), [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py), [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
 - Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_transfer_tracking_partial_clear_workflow`.
+
+### E31. Legacy memo migration for split transfer parents
+
+The deprecated `migrate_legacy_fx_memos.py` helper must update split transfer parents through the single-row `update_transaction` path and preserve the full transaction payload while doing so. Otherwise YNAB can drop the effective pairing/split structure when the row is saved. The helper therefore carries forward the original amount, account/date/payee metadata, approval state, flag color, and subtransactions on that single update.
+
+- Unit: [`tests/unit/test_migrate_legacy_fx_memos.py`](../tests/unit/test_migrate_legacy_fx_memos.py) — `test_migrate_legacy_fx_memos_script_updates_split_transfer_with_single_update`.
+- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_migrate_legacy_split_transfer_workflow`.

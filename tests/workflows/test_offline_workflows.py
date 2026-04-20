@@ -19,7 +19,7 @@ from tests.workflows.helpers import (
 )
 from ymca.cli import main
 from ymca.memo import SENTINEL_PAYEE_NAME
-from ymca.models import TransactionUpdateRequest
+from ymca.models import RemoteSubTransaction, TransactionUpdateRequest
 from ymca.state import load_state
 
 
@@ -440,6 +440,93 @@ def test_migrate_legacy_memo_workflow(
     assert exit_code == 0
     assert "Prepared memo migrations: 1" in output.out
     assert gateway.detail("txn-legacy").memo == "FPS | [FX] -12.34 HKD (rate: 7.8 USD/HKD)"
+
+
+def test_migrate_legacy_split_transfer_workflow(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(config_path)
+    gateway = InMemoryGateway(
+        plan_id="plan-1",
+        plan_name="Example Plan",
+        accounts=(
+            SimulatedAccount(id="acct-hkd", name="Travel HKD"),
+            SimulatedAccount(id="acct-cash", name="Cash"),
+        ),
+        transactions=(
+            SimulatedTransaction(
+                id="txn-split-out",
+                date=date(2026, 4, 10),
+                amount_milliunits=-78000,
+                memo="-/+78 HKD (FX rate: 0.12821) · FPS",
+                account_id="acct-hkd",
+                transfer_account_id="acct-cash",
+                transfer_transaction_id="txn-split-in",
+                payee_id="11111111-1111-1111-1111-111111111111",
+                payee_name="Transfer : Cash",
+                cleared="cleared",
+                approved=True,
+                subtransaction_count=2,
+                flag_color="blue",
+                subtransactions=(
+                    RemoteSubTransaction(
+                        amount_milliunits=-39000,
+                        category_id="22222222-2222-2222-2222-222222222222",
+                        memo="Food",
+                    ),
+                    RemoteSubTransaction(
+                        amount_milliunits=-39000,
+                        category_id="33333333-3333-3333-3333-333333333333",
+                        memo="Taxi",
+                    ),
+                ),
+            ),
+            SimulatedTransaction(
+                id="txn-split-in",
+                date=date(2026, 4, 10),
+                amount_milliunits=78000,
+                memo="Cash transfer",
+                account_id="acct-cash",
+                transfer_account_id="acct-hkd",
+                transfer_transaction_id="txn-split-out",
+                payee_name="Transfer : Travel HKD",
+                cleared="cleared",
+            ),
+        ),
+    )
+    _patch_script_gateway(
+        monkeypatch,
+        "deprecated.one_off_scripts.migrate_legacy_fx_memos",
+        gateway,
+    )
+
+    exit_code = migrate_legacy_fx_memos.main(["--config", str(config_path), "--apply"])
+    output = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Prepared memo migrations: 1" in output.out
+    assert "Writes applied: 1" in output.out
+    assert gateway.update_batches == []
+    assert len(gateway.updates) == 1
+    request = gateway.updates[0]
+    assert request.transaction_id == "txn-split-out"
+    assert request.amount_milliunits == -78000
+    assert request.account_id == "acct-hkd"
+    assert request.date == date(2026, 4, 10)
+    assert request.payee_id == "11111111-1111-1111-1111-111111111111"
+    assert request.payee_name == "Transfer : Cash"
+    assert request.cleared == "cleared"
+    assert request.approved is True
+    assert request.flag_color == "blue"
+    assert len(request.subtransactions) == 2
+    assert request.subtransactions[0].category_id == (
+        "22222222-2222-2222-2222-222222222222"
+    )
+    assert gateway.detail("txn-split-out").memo == "FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)"
+    assert gateway.detail("txn-split-in").memo == "FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)"
 
 
 def test_fix_double_converted_transaction_workflow(

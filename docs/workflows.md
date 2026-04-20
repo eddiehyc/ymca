@@ -68,7 +68,7 @@ Rewrite legacy `(FX rate: ...)` memos into the current `[FX] ... (rate: ... PAIR
 Script: [`deprecated/one_off_scripts/migrate_legacy_fx_memos.py`](../deprecated/one_off_scripts/migrate_legacy_fx_memos.py).
 
 - Unit: [`tests/unit/test_migrate_legacy_fx_memos.py`](../tests/unit/test_migrate_legacy_fx_memos.py).
-- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_migrate_legacy_memo_workflow`.
+- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_migrate_legacy_memo_workflow`, `test_migrate_legacy_split_transfer_workflow`.
 - Integration: not applicable (`deprecated/one_off_scripts/` stays unit-tested only).
 
 ## W9. Double-conversion repair (deprecated helper)

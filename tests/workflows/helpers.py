@@ -13,6 +13,7 @@ from ymca.models import (
     NewTransactionRequest,
     RemoteAccount,
     RemotePlan,
+    RemoteSubTransaction,
     RemoteTransaction,
     RemoteTransactionDetail,
     TransactionSnapshot,
@@ -39,9 +40,13 @@ class SimulatedTransaction:
     transfer_transaction_id: str | None = None
     deleted: bool = False
     payee_name: str | None = None
+    payee_id: str | None = None
+    category_id: str | None = None
     cleared: ClearedStatus = "uncleared"
+    approved: bool = False
     subtransaction_count: int = 0
     flag_color: str | None = None
+    subtransactions: tuple[RemoteSubTransaction, ...] = ()
     modified_knowledge: int = 1
 
 
@@ -289,8 +294,13 @@ class InMemoryGateway:
             transfer_transaction_id=transaction.transfer_transaction_id,
             deleted=transaction.deleted,
             subtransaction_count=transaction.subtransaction_count,
+            payee_id=transaction.payee_id,
             payee_name=transaction.payee_name,
+            category_id=transaction.category_id,
             cleared=transaction.cleared,
+            approved=transaction.approved,
+            flag_color=transaction.flag_color,
+            subtransactions=transaction.subtransactions,
         )
 
     def _require_plan(self, plan_id: str) -> None:
