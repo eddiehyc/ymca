@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+from uuid import UUID
 
 import yaml
 import ynab
@@ -67,6 +68,9 @@ class ApiError(YmcaError):
 
 class UserInputError(YmcaError):
     """Raised when CLI input is invalid or incomplete."""
+
+
+ClearedStatus = Literal["cleared", "reconciled", "uncleared"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +152,22 @@ class RemoteTransactionDetail:
     transfer_transaction_id: str | None
     deleted: bool
     subtransaction_count: int
+    payee_id: str | None = None
+    payee_name: str | None = None
+    category_id: str | None = None
+    cleared: ClearedStatus = "uncleared"
+    approved: bool = False
+    flag_color: str | None = None
+    subtransactions: tuple[RemoteSubTransaction, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteSubTransaction:
+    amount_milliunits: int
+    payee_id: str | None = None
+    payee_name: str | None = None
+    category_id: str | None = None
+    memo: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +181,15 @@ class TransactionUpdateRequest:
     transaction_id: str
     amount_milliunits: int | None
     memo: str
+    flag_color: str | None = None
+    account_id: str | None = None
+    date: date | None = None
+    payee_id: str | None = None
+    payee_name: str | None = None
+    category_id: str | None = None
+    cleared: ClearedStatus | None = None
+    approved: bool | None = None
+    subtransactions: tuple[RemoteSubTransaction, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -569,11 +598,33 @@ class YnabClient:
 
     def update_transaction(self, plan_id: str, request: TransactionUpdateRequest) -> None:
         transactions_api = _require_api(self._transactions_api, "TransactionsApi")
+        existing_kwargs: dict[str, Any] = {
+            "amount": request.amount_milliunits,
+            "memo": request.memo,
+        }
+        if request.account_id is not None:
+            existing_kwargs["account_id"] = UUID(request.account_id)
+        if request.date is not None:
+            existing_kwargs["date"] = request.date
+        if request.payee_id is not None:
+            existing_kwargs["payee_id"] = UUID(request.payee_id)
+        if request.payee_name is not None:
+            existing_kwargs["payee_name"] = request.payee_name
+        if request.category_id is not None:
+            existing_kwargs["category_id"] = UUID(request.category_id)
+        if request.cleared is not None:
+            existing_kwargs["cleared"] = ynab.TransactionClearedStatus(request.cleared)
+        if request.approved is not None:
+            existing_kwargs["approved"] = request.approved
+        if request.flag_color is not None:
+            existing_kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
+        if request.subtransactions:
+            existing_kwargs["subtransactions"] = [
+                _build_save_subtransaction(subtransaction)
+                for subtransaction in request.subtransactions
+            ]
         payload = ynab.PutTransactionWrapper(
-            transaction=ynab.ExistingTransaction(
-                amount=request.amount_milliunits,
-                memo=request.memo,
-            )
+            transaction=ynab.ExistingTransaction(**existing_kwargs)
         )
         try:
             transactions_api.update_transaction(plan_id, request.transaction_id, payload)
@@ -778,6 +829,15 @@ def _map_transaction_detail(raw_transaction: Any) -> RemoteTransactionDetail:
         transfer_transaction_id=_optional_string(raw_transaction.transfer_transaction_id),
         deleted=bool(raw_transaction.deleted),
         subtransaction_count=len(raw_subtransactions),
+        payee_id=_optional_string(getattr(raw_transaction, "payee_id", None)),
+        payee_name=_optional_string(getattr(raw_transaction, "payee_name", None)),
+        category_id=_optional_string(getattr(raw_transaction, "category_id", None)),
+        cleared=_map_cleared(getattr(raw_transaction, "cleared", None)),
+        approved=bool(getattr(raw_transaction, "approved", False)),
+        flag_color=_map_flag_color(getattr(raw_transaction, "flag_color", None)),
+        subtransactions=tuple(
+            _map_subtransaction(subtransaction) for subtransaction in raw_subtransactions
+        ),
     )
 
 
@@ -785,6 +845,55 @@ def _optional_string(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _build_save_subtransaction(subtransaction: RemoteSubTransaction) -> Any:
+    kwargs: dict[str, Any] = {
+        "amount": subtransaction.amount_milliunits,
+        "memo": subtransaction.memo,
+        "payee_name": subtransaction.payee_name,
+    }
+    if subtransaction.payee_id is not None:
+        kwargs["payee_id"] = UUID(subtransaction.payee_id)
+    if subtransaction.category_id is not None:
+        kwargs["category_id"] = UUID(subtransaction.category_id)
+    return ynab.SaveSubTransaction(**kwargs)
+
+
+def _map_subtransaction(raw_subtransaction: Any) -> RemoteSubTransaction:
+    return RemoteSubTransaction(
+        amount_milliunits=int(raw_subtransaction.amount),
+        payee_id=_optional_string(getattr(raw_subtransaction, "payee_id", None)),
+        payee_name=_optional_string(getattr(raw_subtransaction, "payee_name", None)),
+        category_id=_optional_string(getattr(raw_subtransaction, "category_id", None)),
+        memo=getattr(raw_subtransaction, "memo", None),
+    )
+
+
+def _map_cleared(value: Any) -> ClearedStatus:
+    if value is None:
+        return "uncleared"
+    text = str(value).lower()
+    if "reconciled" in text:
+        return "reconciled"
+    if "cleared" in text:
+        return "cleared"
+    return "uncleared"
+
+
+def _map_flag_color(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).lower()
+    allowed = {
+        "red",
+        "orange",
+        "yellow",
+        "green",
+        "blue",
+        "purple",
+    }
+    return text if text in allowed else None
 
 
 def _require_date(value: object, field_name: str) -> date:
