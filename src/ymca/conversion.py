@@ -14,6 +14,7 @@ from .memo import (
     has_fx_marker,
     has_legacy_fx_marker,
     is_sentinel_payee,
+    parse_sentinel_memo,
 )
 from .models import (
     AccountConfig,
@@ -130,12 +131,30 @@ def build_prepared_conversion(
             "track_local_balance: true."
         )
     bindings = resolve_bindings(plan, gateway)
+    account_sync_requests: Mapping[str, SyncRequest] | None = None
     if rebuild_balance:
-        sync_request = SyncRequest(
+        full_scan_request = SyncRequest(
             last_knowledge_of_server=None,
             since_date=None,
             used_bootstrap=True,
         )
+        if any(not account.track_local_balance for account in selected_accounts):
+            normal_sync_request = _build_sync_request(
+                plan_state_for(state, plan.alias),
+                bootstrap_since=bootstrap_since,
+                prompt_for_start_date=prompt_for_start_date,
+            )
+            sync_request = normal_sync_request
+            account_sync_requests = {
+                account.alias: (
+                    full_scan_request
+                    if account.track_local_balance
+                    else normal_sync_request
+                )
+                for account in selected_accounts
+            }
+        else:
+            sync_request = full_scan_request
     else:
         sync_request = _build_sync_request(
             plan_state_for(state, plan.alias),
@@ -154,12 +173,31 @@ def build_prepared_conversion(
         selected_accounts=selected_accounts,
         gateway=gateway,
         sync_request=sync_request,
+        account_sync_requests=account_sync_requests,
     )
 
     updates: list[PreparedUpdate] = []
     skipped: list[SkippedTransaction] = []
     candidate_items: list[tuple[AccountConfig, RemoteTransaction]] = []
+    prior_plan_state = plan_state_for(state, plan.alias)
+    saved_sentinel_ids: Mapping[str, str] = (
+        dict(prior_plan_state.sentinel_ids) if prior_plan_state is not None else {}
+    )
+    saved_sentinel_id_values = set(saved_sentinel_ids.values())
     for account, transaction in fetched_items:
+        if (
+            transaction.id in saved_sentinel_id_values
+            and parse_sentinel_memo(transaction.memo) is not None
+        ):
+            skipped.append(
+                SkippedTransaction(
+                    transaction_id=transaction.id,
+                    date=transaction.date,
+                    account_alias=account.alias,
+                    reason="sentinel",
+                )
+            )
+            continue
         if is_sentinel_payee(transaction.payee_name):
             skipped.append(
                 SkippedTransaction(
@@ -205,10 +243,6 @@ def build_prepared_conversion(
     split_skipped_ids = {
         entry.transaction_id for entry in skipped if entry.reason == "split"
     }
-    prior_plan_state = plan_state_for(state, plan.alias)
-    saved_sentinel_ids: Mapping[str, str] = (
-        dict(prior_plan_state.sentinel_ids) if prior_plan_state is not None else {}
-    )
     tracking = _build_tracking_updates(
         plan=plan,
         bindings=bindings,
@@ -368,8 +402,10 @@ def _fetch_saved_sentinel(
     """
     try:
         detail = gateway.get_transaction_detail(plan_id, sentinel_id)
-    except ApiError:
-        return None
+    except ApiError as exc:
+        if _is_not_found_api_error(exc):
+            return None
+        raise
     if detail.deleted:
         return None
     if not is_sentinel_payee(detail.payee_name):
@@ -565,17 +601,23 @@ def _fetch_transactions_for_accounts(
     selected_accounts: tuple[AccountConfig, ...],
     gateway: YnabGateway,
     sync_request: SyncRequest,
+    account_sync_requests: Mapping[str, SyncRequest] | None = None,
 ) -> tuple[list[tuple[AccountConfig, RemoteTransaction]], int, int]:
     fetched_items: list[tuple[AccountConfig, RemoteTransaction]] = []
     fetched_transactions = 0
     fetched_server_knowledge = sync_request.last_knowledge_of_server or 0
 
     for account in selected_accounts:
+        request = (
+            account_sync_requests.get(account.alias, sync_request)
+            if account_sync_requests is not None
+            else sync_request
+        )
         snapshot = gateway.list_transactions_by_account(
             bindings.plan_id,
             bindings.account_ids[account.alias],
-            since_date=sync_request.since_date,
-            last_knowledge_of_server=sync_request.last_knowledge_of_server,
+            since_date=request.since_date,
+            last_knowledge_of_server=request.last_knowledge_of_server,
         )
         fetched_transactions += len(snapshot.transactions)
         fetched_server_knowledge = max(fetched_server_knowledge, snapshot.server_knowledge)
@@ -596,6 +638,12 @@ def _group_update_requests_by_account(
         account_alias: tuple(requests)
         for account_alias, requests in grouped_requests.items()
     }
+
+
+def _is_not_found_api_error(exc: ApiError) -> bool:
+    if exc.status == 404:
+        return True
+    return "status=404" in str(exc)
 
 
 def _dedupe_transfer_transactions(

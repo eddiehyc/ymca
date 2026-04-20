@@ -49,7 +49,10 @@ class YnabClient:
         try:
             response = plans_api.get_plans(include_accounts=include_accounts)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("list plans", exc)) from exc
+            raise ApiError(
+                _format_api_exception("list plans", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return tuple(self._map_plan(plan) for plan in response.data.plans)
 
@@ -58,7 +61,10 @@ class YnabClient:
         try:
             response = accounts_api.get_accounts(plan_id)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("list accounts", exc)) from exc
+            raise ApiError(
+                _format_api_exception("list accounts", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return AccountSnapshot(
             accounts=tuple(self._map_account(account) for account in response.data.accounts),
@@ -82,7 +88,10 @@ class YnabClient:
                 last_knowledge_of_server=last_knowledge_of_server,
             )
         except ApiException as exc:
-            raise ApiError(_format_api_exception("list account transactions", exc)) from exc
+            raise ApiError(
+                _format_api_exception("list account transactions", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return TransactionSnapshot(
             transactions=tuple(
@@ -96,7 +105,10 @@ class YnabClient:
         try:
             response = transactions_api.get_transaction_by_id(plan_id, transaction_id)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("get transaction detail", exc)) from exc
+            raise ApiError(
+                _format_api_exception("get transaction detail", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return self._map_transaction_detail(response.data.transaction)
 
@@ -114,7 +126,10 @@ class YnabClient:
         try:
             transactions_api.update_transaction(plan_id, request.transaction_id, payload)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("update transaction", exc)) from exc
+            raise ApiError(
+                _format_api_exception("update transaction", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
     def update_transactions(
         self, plan_id: str, requests: Sequence[TransactionUpdateRequest]
@@ -131,7 +146,10 @@ class YnabClient:
         try:
             transactions_api.update_transactions(plan_id, payload)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("update transactions", exc)) from exc
+            raise ApiError(
+                _format_api_exception("update transactions", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
     @staticmethod
     def _build_patch_transaction(request: TransactionUpdateRequest) -> Any:
@@ -162,7 +180,10 @@ class YnabClient:
         try:
             response = transactions_api.create_transaction(plan_id, payload)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("create transaction", exc)) from exc
+            raise ApiError(
+                _format_api_exception("create transaction", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         # YNAB's ``SaveTransactionsResponse`` wraps the payload in ``data``.
         data = getattr(response, "data", response)
@@ -187,7 +208,10 @@ class YnabClient:
         try:
             transactions_api.delete_transaction(plan_id, transaction_id)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("delete transaction", exc)) from exc
+            raise ApiError(
+                _format_api_exception("delete transaction", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
     def _map_plan(self, raw_plan: Any) -> RemotePlan:
         raw_accounts = getattr(raw_plan, "accounts", None) or []
@@ -249,6 +273,15 @@ def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _api_exception_status(exc: ApiException) -> int | None:
+    raw_status = getattr(exc, "status", None)
+    if isinstance(raw_status, int):
+        return raw_status
+    if isinstance(raw_status, str) and raw_status.isdigit():
+        return int(raw_status)
+    return None
 
 
 def _map_cleared(value: Any) -> ClearedStatus:

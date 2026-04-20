@@ -1380,6 +1380,76 @@ def test_build_prepared_conversion_rebuild_balance_uses_full_scan() -> None:
     assert prepared.tracking[0].new_balance_milliunits == 12340
 
 
+def test_build_prepared_conversion_rebuild_balance_full_scans_only_tracked_accounts() -> None:
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(
+                alias="tracked_hkd",
+                name="Tracked HKD",
+                currency="HKD",
+                enabled=True,
+                track_local_balance=True,
+            ),
+            AccountConfig(
+                alias="plain_gbp",
+                name="Plain GBP",
+                currency="GBP",
+                enabled=True,
+            ),
+        ),
+        fx_rates={
+            "HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True),
+            "GBP": FxRule(rate=Decimal("1.35"), rate_text="1.35", divide_to_base=False),
+        },
+    )
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(
+                    RemoteAccount(id="acct-hkd", name="Tracked HKD", deleted=False),
+                    RemoteAccount(id="acct-gbp", name="Plain GBP", deleted=False),
+                ),
+                server_knowledge=1,
+            )
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-hkd": [TransactionSnapshot(transactions=(), server_knowledge=42)],
+            "acct-gbp": [TransactionSnapshot(transactions=(), server_knowledge=43)],
+        },
+    )
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"tracked_hkd": "acct-hkd", "plain_gbp": "acct-gbp"},
+                server_knowledge=7,
+            )
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=None,
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+        rebuild_balance=True,
+    )
+
+    assert prepared.rebuild_balance is True
+    assert gateway.list_transactions_by_account_calls == [
+        ("plan-1", "acct-hkd", None, None),
+        ("plan-1", "acct-gbp", None, 7),
+    ]
+
+
 def test_build_prepared_conversion_fetches_saved_sentinel_when_delta_is_empty() -> None:
     """Regression: a quiet delta must not lose sight of the existing sentinel.
 
@@ -1460,6 +1530,101 @@ def test_build_prepared_conversion_fetches_saved_sentinel_when_delta_is_empty() 
     assert entry.update_sentinel.transaction_id == "existing-sentinel"
 
 
+def test_build_prepared_conversion_reraises_saved_sentinel_lookup_errors() -> None:
+    plan = _tracked_hkd_plan()
+
+    class _SentinelLookupGateway(FakeGateway):
+        def get_transaction_detail(
+            self, plan_id: str, transaction_id: str
+        ) -> RemoteTransactionDetail:
+            del plan_id, transaction_id
+            raise ApiError("Failed to get transaction detail via YNAB API. status=500")
+
+    gateway = _SentinelLookupGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=42,
+            )
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-1": [TransactionSnapshot(transactions=(), server_knowledge=42)]
+        },
+    )
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"travel_hkd": "acct-1"},
+                server_knowledge=42,
+                sentinel_ids={"travel_hkd": "existing-sentinel"},
+            )
+        },
+    )
+
+    with pytest.raises(ApiError, match="status=500"):
+        build_prepared_conversion(
+            plan=plan,
+            state=state,
+            gateway=gateway,
+            selected_account_aliases=(),
+            bootstrap_since=None,
+            prompt_for_start_date=lambda: date(2026, 4, 1),
+        )
+
+
+def test_build_prepared_conversion_treats_404_saved_sentinel_as_missing() -> None:
+    plan = _tracked_hkd_plan()
+
+    class _MissingSentinelGateway(FakeGateway):
+        def get_transaction_detail(
+            self, plan_id: str, transaction_id: str
+        ) -> RemoteTransactionDetail:
+            del plan_id, transaction_id
+            raise ApiError("Failed to get transaction detail via YNAB API. status=404")
+
+    gateway = _MissingSentinelGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=42,
+            )
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-1": [TransactionSnapshot(transactions=(), server_knowledge=42)]
+        },
+    )
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"travel_hkd": "acct-1"},
+                server_knowledge=42,
+                sentinel_ids={"travel_hkd": "missing-sentinel"},
+            )
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=None,
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    entry = prepared.tracking[0]
+    assert entry.prior_sentinel is None
+    assert entry.create_sentinel is not None
+
+
 def test_build_prepared_conversion_recreates_sentinel_when_user_deletes_it() -> None:
     """If the saved sentinel got deleted, we detect it and queue a new create."""
     plan = _tracked_hkd_plan()
@@ -1513,6 +1678,89 @@ def test_build_prepared_conversion_recreates_sentinel_when_user_deletes_it() -> 
         prompt_for_start_date=lambda: date(2026, 4, 1),
     )
 
+    entry = prepared.tracking[0]
+    assert entry.prior_sentinel is None
+    assert entry.create_sentinel is not None
+    assert entry.update_sentinel is None
+
+
+def test_build_prepared_conversion_skips_saved_renamed_sentinel_from_fx_pipeline() -> None:
+    plan = _tracked_hkd_plan()
+    renamed_sentinel_memo = (
+        "[YMCA-BAL] HKD 12,340.00 | rate 7.8 HKD/USD | "
+        "updated 2026-04-18T12:00:00Z | drift 0.00 USD"
+    )
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=42,
+            )
+        },
+        transaction_details={
+            "renamed-sentinel": RemoteTransactionDetail(
+                id="renamed-sentinel",
+                date=date(2026, 4, 18),
+                amount_milliunits=0,
+                memo=renamed_sentinel_memo,
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=0,
+                payee_name="Manually Renamed Sentinel",
+                cleared="reconciled",
+            )
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="renamed-sentinel",
+                            date=date(2026, 4, 18),
+                            amount_milliunits=0,
+                            memo=renamed_sentinel_memo,
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                            payee_name="Manually Renamed Sentinel",
+                            cleared="reconciled",
+                        ),
+                    ),
+                    server_knowledge=43,
+                )
+            ]
+        },
+    )
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"travel_hkd": "acct-1"},
+                server_knowledge=42,
+                sentinel_ids={"travel_hkd": "renamed-sentinel"},
+            )
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=None,
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    assert prepared.updates == ()
+    assert any(
+        skip.transaction_id == "renamed-sentinel" and skip.reason == "sentinel"
+        for skip in prepared.skipped
+    )
     entry = prepared.tracking[0]
     assert entry.prior_sentinel is None
     assert entry.create_sentinel is not None
