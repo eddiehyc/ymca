@@ -4,9 +4,10 @@ This document describes how YMCA tests are organized, how they are run, and the 
 
 ## 1. Scope
 
-Tests live under the `tests/` directory and are split into two independent suites:
+Tests live under the `tests/` directory and are split into three complementary suites:
 
 - **Unit tests** (`tests/unit/`): fast, offline, no network. They use the `FakeGateway` in `tests/fakes.py` to stand in for YNAB.
+- **Offline workflow tests** (`tests/workflows/`): end-to-end, offline, no network. They use a stateful in-memory YNAB gateway to exercise real CLI and deprecated-script flows across multiple steps and persisted local state.
 - **Integration tests** (`tests/integration/`): exercise the real YNAB HTTP API against a dedicated test plan. Marked with `@pytest.mark.integration`.
 
 Deprecated one-off scripts under `deprecated/one_off_scripts/` are covered by
@@ -143,6 +144,8 @@ When you discover a new workflow or edge case:
 | `tests/unit/` | Offline unit tests. |
 | `tests/unit/test_ynab_client.py` | Adapter coverage via `ynab.*Api` monkeypatching. |
 | `tests/fakes.py` | `FakeGateway`, shared by unit tests only. |
+| `tests/workflows/` | Offline end-to-end workflow tests with a stateful in-memory gateway. |
+| `tests/workflows/helpers.py` | `InMemoryGateway`, shared by offline workflow tests. |
 | `tests/integration/conftest.py` | Session-scoped fixtures: API key, plan lookup, accounts, seed, teardown, rate-limit guard. |
 | `tests/integration/helpers.py` | `CountingYnabClient`, account provisioning, SDK delete helper, seed builders. |
 | `tests/integration/test_*.py` | Live coverage for supported workflows, all marked `integration`. |
