@@ -166,25 +166,30 @@ A transfer transaction whose YNAB amount is `0` carries a `+/-` literal prefix i
 
 Delta-mode balance transitions:
 
-- A previously converted cleared/reconciled transaction that is now deleted causes the balance engine to subtract its parsed local-currency amount.
-- A previously converted uncleared transaction that is now deleted is a no-op for the balance (it was never counted).
+- A cleared/reconciled transaction that is now deleted causes the balance engine to subtract its source-currency amount (parsed from the memo for marked rows, taken from `amount_milliunits` for unmarked pre-FX rows).
+- A transaction that is `uncleared` in the delta is a no-op for the balance regardless of the `deleted` flag (uncleared rows are never counted).
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
 - Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — deletes a cleared seed row and asserts the sentinel subtracts.
 
-### E24. Cleared → uncleared without deletion — unsupported drift
+### E24. `cleared → uncleared` without deletion — unsupported drift
 
-The delta-mode algorithm has no per-transaction state, so transitioning a counted transaction from cleared/reconciled back to uncleared cannot be reversed. The balance will drift. Users are expected to run `ymca sync --rebuild-balance` after the fact.
+The delta-mode rule in §12.4 applies the contribution only when the row is `cleared`/`reconciled`. An un-cleared row in the delta is skipped, so the prior add cannot be reversed. The tracked balance keeps the add while YNAB's `cleared_balance` drops by the amount; the tolerance check surfaces the drift on the next run.
 
-- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — asserts the delta-mode no-op for uncleared transitions and the rebuild-mode recovery.
-- Integration: not a supported workflow (pure documentation edge case exercised through the unit tests).
+- Recovery: `ymca sync --rebuild-balance`.
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_build_tracking_update_uncleared_transition_is_no_op_documented`.
 
-### E25. Modifying an already-converted cleared/reconciled transaction — unsupported drift
+### E25. Modifying an already-counted cleared/reconciled transaction — unsupported drift
 
-Editing a cleared or reconciled transaction's amount or memo after FX conversion breaks the balance contract the same way as E24. `ymca sync --rebuild-balance` is the recovery path.
+Because the balance engine does not remember which rows it has already counted, any subsequent appearance of a cleared row in the delta contributes again. Common triggers:
 
-- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — rebuild path verifies the balance is restored.
-- Integration: not a supported workflow.
+- Editing a cleared row's amount or memo (YNAB re-surfaces the row → we add a second time, creating a drift equal to the source amount).
+- Re-clearing an un-cleared row that was previously cleared and counted (`cleared → uncleared → cleared`): the first clear is counted, the un-clear is skipped (E24), and the second clear double-counts.
+
+This is the price the engine pays for being stateless with respect to transactions. Users recover via `ymca sync --rebuild-balance`, which re-derives the balance from the current set of cleared FX-marked rows.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_delta_adds_marked_cleared_row_previously_uncounted` reproduces the regression where a cleared marked row was being dropped from the delta contribution, and verifies the contribution is now applied.
+- Integration: not a supported workflow (users recover via rebuild).
 
 ### E26. First-time tracking enablement — bootstrap sentinel from history
 

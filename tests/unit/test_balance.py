@@ -212,7 +212,7 @@ def test_build_tracking_update_adds_new_cleared_transaction() -> None:
     assert result.prior_balance_milliunits == 0
     assert result.new_balance_milliunits == 12340
     assert len(result.contributions) == 1
-    assert result.contributions[0].reason == "new-cleared"
+    assert result.contributions[0].reason == "delta-cleared"
     assert result.create_sentinel is not None
     assert result.create_sentinel.flag_color == SENTINEL_FLAG_COLOR
     assert result.update_sentinel is None
@@ -315,7 +315,44 @@ def test_build_tracking_update_subtracts_cleared_then_deleted() -> None:
     )
 
     assert result.new_balance_milliunits == 12340  # -(-12340) added back
-    assert result.contributions[0].reason == "existing-cleared-deleted"
+    assert result.contributions[0].reason == "delta-cleared-deleted"
+
+
+def test_delta_adds_marked_cleared_row_previously_uncounted() -> None:
+    """Regression: any cleared/reconciled row in the delta contributes, even
+    when it already carries an FX marker.
+
+    The user reported a +6.94 USD drift on ``amex_hk_explorer`` after a
+    rebuild because a single ``[FX]``-marked row re-appeared in the next
+    delta (its cleared status had changed post-rebuild). The old code
+    treated ``marked + cleared + not-deleted`` as a no-op, which dropped
+    the contribution and let the tracked balance and YNAB's cleared_balance
+    diverge. The spec §12.4 rule is simpler: every cleared row in the
+    delta updates the balance, period.
+    """
+    plan = _plan()
+    already_marked = _txn(
+        txn_id="reclassified",
+        amount_milliunits=-1582,
+        memo="Lunch | [FX] -12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="cleared",
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[already_marked],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert result.new_balance_milliunits == -12340
+    assert len(result.contributions) == 1
+    assert result.contributions[0].reason == "delta-cleared"
 
 
 def test_build_tracking_update_uncleared_transition_is_no_op_documented() -> None:

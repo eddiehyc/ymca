@@ -302,33 +302,42 @@ def _classify_transaction(
             reason="rebuild-unmarked-cleared",
         )
 
-    # Delta mode
+    # Delta mode: every cleared/reconciled row in the delta contributes, regardless
+    # of whether it already carries an FX marker. The balance engine does not do
+    # per-transaction delta tracking; the assumption is that YNAB only re-surfaces
+    # a row when it changed, and a change that leaves (or keeps) the row in a
+    # cleared state is accounted for by adding (or subtracting, if newly deleted)
+    # the source-currency amount. Modifying an already-counted cleared row is an
+    # explicit documented limitation (§12.7, E25) recoverable via
+    # ``ymca sync --rebuild-balance``.
+    if not is_cleared:
+        return None
+
     if has_marker:
-        if is_cleared and transaction.deleted:
-            amount = _resolve_marked_source_milliunits(
-                transaction=transaction,
-                account=account,
-                prompt=prompt,
-                ambiguous_out=ambiguous_out,
-            )
-            if amount is None:
-                return None
-            return BalanceContribution(
-                transaction_id=transaction.id,
-                signed_source_milliunits=-amount,
-                reason="existing-cleared-deleted",
-            )
-        # Other marked transitions are no-ops in delta mode (see §12.7 / E24).
+        amount = _resolve_marked_source_milliunits(
+            transaction=transaction,
+            account=account,
+            prompt=prompt,
+            ambiguous_out=ambiguous_out,
+        )
+    else:
+        # Unmarked rows are pre-FX, so ``amount_milliunits`` is still in the
+        # account's source currency.
+        amount = transaction.amount_milliunits
+
+    if amount is None:
         return None
 
     if transaction.deleted:
-        return None
-    if not is_cleared:
-        return None
+        return BalanceContribution(
+            transaction_id=transaction.id,
+            signed_source_milliunits=-amount,
+            reason="delta-cleared-deleted",
+        )
     return BalanceContribution(
         transaction_id=transaction.id,
-        signed_source_milliunits=transaction.amount_milliunits,
-        reason="new-cleared",
+        signed_source_milliunits=amount,
+        reason="delta-cleared",
     )
 
 

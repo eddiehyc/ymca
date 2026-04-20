@@ -386,19 +386,17 @@ For every tracked account, during a normal (non-rebuild) `ymca sync` run:
 
 1. Fetch the delta using saved `server_knowledge` (unchanged from the existing flow).
 2. **Locate the prior sentinel.** If `state.yaml` has a `sentinel_ids` entry for this account, fetch that transaction directly via `get_transaction_detail` and use it as the prior state. If the lookup comes back deleted, with a different payee, or 404, treat the sentinel as missing and fall through to the next step. This direct lookup is necessary because the delta only surfaces the sentinel on the run that last touched it — on quieter subsequent runs the delta is empty and a scan-only detection would miss the existing sentinel and try to create a second one.
-3. For each returned transaction in the account:
-   - **Sentinel transaction**: skip.
-   - **Already carries `[FX]` or legacy `(FX rate: ...)` marker** (i.e. we have seen this row before):
-     - `cleared` or `reconciled`, **not deleted** → **no-op** (assume already counted).
-     - `cleared` or `reconciled`, **deleted** → **subtract** the source amount parsed from the memo.
-     - `uncleared` → **no-op** (see §12.7 Known Limitations).
-   - **Does not yet carry a marker** (new or untouched row):
-     - Run the normal FX conversion path (append `[FX]` marker, rewrite amount).
-     - `cleared` or `reconciled`, **not deleted** → **add** the local-currency amount to the running balance.
-     - `uncleared` → FX convert only; no balance change.
-     - `deleted` → skip entirely.
+3. For each returned transaction in the account, apply the following single rule:
+   - **Sentinel transaction** (payee matches `[YMCA] Tracked Balance`): skip.
+   - **Split transaction**: skip (already skipped from the FX path; also skipped here).
+   - **`uncleared`** (regardless of marker, regardless of `deleted`): skip — no balance change.
+   - **`cleared` or `reconciled`, not deleted**: **add** the source-currency amount to the tracked balance. For marked rows the amount comes from the FX marker in the memo (sign from the YNAB amount per §12.7); for still-unmarked rows the YNAB `amount_milliunits` is the pre-FX source-currency amount.
+   - **`cleared` or `reconciled`, deleted**: **subtract** the same source-currency amount.
+   - The FX conversion step is unchanged: still-unmarked rows that are not deleted get the `[FX]` marker appended and their amount rewritten to the base currency, whether cleared or uncleared.
 4. Run the tolerance check (§12.6). Emit a warning if drift exceeds the threshold; do not block the run.
 5. Upsert the sentinel transaction so its memo reflects the new balance. First enablement creates the sentinel via `create_transaction` and records the resulting id into `state.yaml`; subsequent runs update it via `update_transaction` using the id from step 2.
+
+The engine deliberately does **not** remember whether a given transaction was previously counted. The simpler rule above assumes that every time YNAB re-surfaces a cleared row in the delta, a legitimate state change (new, un-cleared → cleared, reconciled, deleted) has occurred that warrants updating the balance. Editing an already-counted cleared row (amount, memo, or clearing it again) causes a double-count; see §12.8 and E25. Users recover from any resulting drift via `ymca sync --rebuild-balance`.
 
 ### 12.5 Rebuild Mode (`--rebuild-balance`)
 
@@ -431,10 +429,14 @@ The warning is informational only. The sync run does not fail.
 
 ### 12.8 Known Limitations
 
-These cases are explicitly **not supported** by the delta-mode algorithm and will cause the tracked balance to drift. Users recover via the tolerance check and `ymca sync --rebuild-balance`:
+The delta-mode rule from §12.4 updates the balance every time a cleared/reconciled row shows up in the delta. This is intentional and is what makes the engine stateless (no per-transaction ledger on disk), but it bakes in one documented failure mode:
 
-- **Modifying an already-converted, cleared or reconciled transaction** (changing the amount or memo). YMCA cannot distinguish this from a new row and does not re-read prior state, so the balance does not update.
-- **Transitioning a previously-counted transaction from cleared/reconciled back to uncleared** without deletion. YMCA does not track per-transaction contribution state, so it cannot reverse the original add.
+- **Modifying an already-counted cleared or reconciled transaction causes drift.** YNAB re-surfaces the row in the next delta; the engine applies the rule again and double-counts (or, for a deletion of the modified row, subtracts twice). Examples that trigger this:
+  - Editing a cleared row's amount or memo.
+  - Un-clearing a previously-cleared row (`cleared → uncleared`): we fail to subtract on the un-clear (uncleared rows are skipped by §12.4), so the tracked balance keeps the prior add.
+  - Re-clearing an un-cleared row (`cleared → uncleared → cleared`): we add again on the second clear.
+
+The tolerance check (§12.6) surfaces any resulting drift on the next run. Recovery is always `ymca sync --rebuild-balance`, which re-derives the balance from the current set of cleared FX-marked rows in the account and writes the corrected balance back to the sentinel.
 
 ### 12.9 Interaction With Existing Skip Rules
 

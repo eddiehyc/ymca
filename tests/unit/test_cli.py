@@ -606,7 +606,7 @@ def test_sync_summary_prints_contributions_and_ambiguous_transfers(
                     BalanceContribution(
                         transaction_id="t1",
                         signed_source_milliunits=1000,
-                        reason="new-cleared",
+                        reason="delta-cleared",
                     ),
                 ),
                 ambiguous_transfers=(

@@ -224,7 +224,7 @@ def test_local_currency_tracking_full_lifecycle(
     assert entry_after_delete.prior_balance_milliunits == -12340
     # Delta sees the marked row as cleared + deleted → subtract the contribution.
     assert any(
-        contribution.reason == "existing-cleared-deleted"
+        contribution.reason == "delta-cleared-deleted"
         for contribution in entry_after_delete.contributions
     )
     assert entry_after_delete.new_balance_milliunits == 0
