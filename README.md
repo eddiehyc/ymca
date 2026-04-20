@@ -266,6 +266,8 @@ On every delta run the engine checks `was_counted` (derived from the bracket) ag
 
 In practice this handles every ordinary YNAB operation on a tracked row: `uncleared → cleared/reconciled`, `cleared → reconciled`, `cleared → uncleared`, `cleared → deleted`, even flip-flops like `cleared → uncleared → cleared` (net zero). Legacy `(FX rate: ...)` memos get migrated to the new form on first touch.
 
+**Transfer transactions (known rough edge):** In YNAB, both legs of a transfer share the same memo, including the `[FX]` / `[FX+]` counted bit. YMCA tracks balance **per account**, but the ledger marker lives on **one** shared string. If the two sides are not cleared, deleted, or otherwise “in or out of the balance” in lockstep—typical when one leg clears before the other, or you delete one side while the other still shows an old marker—the shared memo can imply a counted state that does not match what that account’s balance should be. When that happens the sentinel can drift; use `ymca sync --rebuild-balance --apply` to recompute from all cleared rows. In practice, keep transfer legs aligned (same cleared state when possible) or run a rebuild after edits that leave the two sides out of sync.
+
 Known limitation — editing a cleared, already-FX-converted row is **not** supported. The memo still holds the original source amount, so YMCA can't tell the amount changed. Three sub-scenarios all drift:
 
 1. Amount-only edit → no-op, drift equal to the amount delta.
