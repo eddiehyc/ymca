@@ -53,7 +53,7 @@ Lists visible YNAB budgets and open accounts to help the user fill in the config
 
 Closed and deleted accounts are not shown.
 
-### 3.4 `ymca convert [--account ALIAS]... [--apply] [--bootstrap-since YYYY-MM-DD]`
+### 3.4 `ymca sync [--account ALIAS]... [--apply] [--bootstrap-since YYYY-MM-DD] [--rebuild-balance]`
 
 - dry-run by default
 - writes only when `--apply` is present
@@ -61,6 +61,7 @@ Closed and deleted accounts are not shown.
 - if `--bootstrap-since` is supplied, it takes precedence for that run and ignores saved `server_knowledge`
 - prompts for a bootstrap date if no local `server_knowledge` exists and no bootstrap date is supplied
 - saves refreshed `server_knowledge` after successful apply runs
+- if `--rebuild-balance` is supplied, switches tracked accounts into full-scan mode (see §12); mutually exclusive with `--bootstrap-since`
 
 ## 4. Runtime Path Resolution
 
@@ -70,11 +71,11 @@ Path handling is intentionally split between config-management commands and runt
 
 `ymca config init --path ...` and `ymca config check --path ...` operate on the explicit path supplied by the user.
 
-They do not change the runtime config path used by later `discover` or `convert` commands.
+They do not change the runtime config path used by later `discover` or `sync` commands.
 
 ### 4.2 Runtime Commands
 
-`ymca discover` and `ymca convert` resolve the config path in this order:
+`ymca discover` and `ymca sync` resolve the config path in this order:
 
 1. `YMCA_CONFIG_PATH`
 2. `~/.config/ymca/config.yaml`
@@ -167,6 +168,8 @@ plans:
     account_ids:
       hkd_wallet: 11111111-1111-1111-1111-111111111111
     server_knowledge: 42
+    sentinel_ids:
+      hkd_wallet: 22222222-2222-2222-2222-222222222222
 ```
 
 The state file is local-only and must not be committed.
@@ -176,6 +179,7 @@ It stores:
 - resolved YNAB budget IDs
 - resolved YNAB account IDs
 - `server_knowledge` per configured plan alias from the config file
+- `sentinel_ids` per configured plan alias: a map of tracked-account aliases to the YNAB transaction id of that account's local-currency sentinel (see §12). Omitted entirely for plans with no tracked accounts. Required so quiet delta runs can still locate the sentinel, which otherwise would not appear in the delta because `server_knowledge` already advanced past its last write.
 
 ## 6. Sync Model
 
@@ -224,13 +228,19 @@ Example:
 
 ## 8. Memo Format
 
-The current FX marker is appended to the end of the memo.
+The current FX marker is appended to the end of the memo. It takes one of two bracket forms — `[FX]` or `[FX+]` — which differ only by the trailing `+` sign:
+
+- `[FX]`  — converted but **not** counted toward a tracked local-currency balance.
+- `[FX+]` — converted **and** already counted toward the tracked balance.
 
 Examples:
 
 - `Dinner | [FX] -123.45 HKD (rate: 7.8 HKD/USD)`
+- `Dinner | [FX+] -123.45 HKD (rate: 7.8 HKD/USD)`
 - `[FX] 500 HKD (rate: 0.128 USD/HKD)`
-- `[FX] +/-78 HKD (rate: 0.128 USD/HKD)`
+- `[FX+] +/-78 HKD (rate: 0.128 USD/HKD)`
+
+The counted bit is consumed by the local-currency tracking engine (see §12) to avoid double-counting on benign transitions like `cleared → reconciled`. Accounts without `track_local_balance: true` always use the `[FX]` form.
 
 Formatting rules:
 
@@ -244,7 +254,7 @@ Formatting rules:
 
 Detection rule:
 
-- any memo containing the structured `[FX] ... (rate: ...)` marker is treated as already converted
+- any memo containing the structured `[FX] ... (rate: ...)` or `[FX+] ... (rate: ...)` marker is treated as already converted; the FX conversion path is idempotent and never re-writes the amount or the source-currency payload.
 
 ## 9. Legacy Memo Compatibility
 
@@ -331,3 +341,127 @@ uv run ruff check .
 uv run mypy src tests deprecated
 uv run pytest
 ```
+
+## 12. Local Currency Tracking
+
+Local currency tracking is an **opt-in**, per-account feature layered on top of the FX conversion pipeline. When enabled, `ymca sync` maintains a running source-currency balance (e.g. HKD for an HKD account) for the tracked account and surfaces it through a dedicated YNAB **sentinel transaction** inside that account.
+
+### 12.1 Why a Sentinel Transaction
+
+The YNAB public REST API (OpenAPI 1.79.0 at time of writing) does not expose an endpoint to rename an existing account: `AccountsApi` only supports `create_account`, `get_accounts`, and `get_account_by_id`. Writing the running balance into the account name is therefore not feasible. YMCA instead maintains a single zero-amount sentinel transaction per tracked account whose memo encodes the running local-currency balance. YNAB users can read the balance by viewing that transaction in the register.
+
+### 12.2 Config Toggle
+
+Each account may set `track_local_balance: true` in the config file. Defaults to `false`. The toggle is rejected by schema validation if the account uses the base currency.
+
+```yaml
+accounts:
+  hsbc_hkd:
+    name: HSBC HK [HKD]
+    currency: HKD
+    enabled: true
+    track_local_balance: true
+```
+
+### 12.3 Sentinel Transaction Shape
+
+- **Payee name**: `[YMCA] Tracked Balance` (constant; used as the detection key).
+- **Amount**: `0` milliunits.
+- **Cleared status**: `reconciled` (keeps it out of the "needs clearing" UI bucket).
+- **Flag color**: `green`. Makes the sentinel visually distinct in the YNAB register and is re-applied on every sync run, so a hand-cleared flag is restored automatically on the next run.
+- **Date**: the date of the last update in the account's local timezone.
+- **Memo** (single-line, pipe-separated):
+
+```text
+[YMCA-BAL] <CCY> <amount> | rate <rate_text> <PAIR> | updated <ISO8601_UTC> | prev <prev_amount> <prev_ISO8601_UTC> | drift <drift_signed> <stronger_CCY>
+```
+
+Example:
+
+```text
+[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | updated 2026-04-19T14:30:45Z | prev 1,200.00 2026-04-18T14:30:45Z | drift 0.00 USD
+```
+
+`prev ...` is omitted on the first write. The amount is rounded to two decimal places, with thousands separators, matching the existing `[FX]` memo style.
+
+The sentinel transaction itself is always excluded from FX conversion and from the running-balance computation (detected by exact payee-name match).
+
+### 12.4 Per-Run Algorithm (Delta Mode)
+
+The classifier is driven by the **dual-marker** rule. Every FX-converted row carries either `[FX]` (uncounted) or `[FX+]` (counted); the bracket IS the per-transaction ledger, so the engine needs no local per-transaction storage. For each row in the delta the engine computes two booleans and consults a 2×2:
+
+- `was_counted` — memo already carries `[FX+]`. (Legacy `(FX rate: ...)` markers count as `was_counted=False`.)
+- `should_be_counted` — YNAB currently reports `cleared` or `reconciled` **and** `deleted == false`.
+
+| `was_counted` | `should_be_counted` | Balance | Memo |
+|---------------|---------------------|---------|------|
+| False | False | — | stay as-is (migrate legacy → `[FX]` on touch) |
+| False | True  | **add** source amount | flip to `[FX+]` (or migrate legacy → `[FX+]`) |
+| True  | False | **subtract** same source amount | flip to `[FX]` |
+| True  | True  | — | — |
+
+Concretely, for every tracked account on a normal (non-rebuild) `ymca sync` run:
+
+1. Fetch the delta using saved `server_knowledge` (unchanged from the existing flow).
+2. **Locate the prior sentinel.** If `state.yaml` has a `sentinel_ids` entry for this account, fetch that transaction directly via `get_transaction_detail` and use it as the prior state. If the lookup comes back deleted, with a different payee, or 404, treat the sentinel as missing and fall through to the next step. The direct lookup is necessary because the delta only surfaces the sentinel on the run that last touched it — on quieter subsequent runs the delta is empty and a scan-only detection would miss it and try to create a second one.
+3. For each returned transaction:
+   - **Sentinel transaction** (payee matches `[YMCA] Tracked Balance`): skip.
+   - **Split transaction**: skip (already skipped from the FX path).
+   - **Unmarked, not deleted**: goes through the normal FX conversion path. The marker written at convert time is `[FX+]` when `should_be_counted` is true and `[FX]` otherwise. Balance contribution is the YNAB `amount_milliunits` (still in source currency at this point) when `should_be_counted` is true, zero otherwise.
+   - **Marked (current or legacy)**: apply the 2×2 above. The memo flip happens as a batched `update_transactions` call right before the sentinel upsert.
+4. Run the tolerance check (§12.6). Emit a warning if drift exceeds the threshold; do not block the run.
+5. Upsert the sentinel transaction so its memo reflects the new balance. First enablement creates the sentinel via `create_transaction` and records the resulting id into `state.yaml`; subsequent runs update it via `update_transaction` using the id from step 2.
+
+Because the counted bit is recorded in the memo itself, the engine correctly handles every status transition the user can make through the YNAB UI: `uncleared → cleared`, `cleared → uncleared`, `cleared → reconciled` (no double-count), `cleared → deleted`, `cleared → uncleared → cleared` (net zero). There is exactly one class of user action the engine cannot absorb: see §12.8.
+
+### 12.5 Rebuild Mode (`--rebuild-balance`)
+
+`ymca sync --rebuild-balance` switches all selected tracked accounts into full-scan mode:
+
+- Saved `server_knowledge` is not consulted. The run fetches every active transaction in each tracked account since the earliest available date.
+- Each account's running balance is recomputed from scratch:
+  - Every non-sentinel, non-deleted, non-split transaction that is `cleared` or `reconciled` **and** carries either the current `[FX]` marker or the legacy `(FX rate: ...)` marker contributes its parsed local-currency amount to the new balance.
+  - Unmarked transactions encountered during rebuild are FX-converted by the normal rules; their contribution to the balance follows §12.4.
+- The sentinel is upserted with the newly computed balance.
+- `--rebuild-balance` is mutually exclusive with `--bootstrap-since`.
+- `--rebuild-balance` requires at least one tracked account in scope after the `--account` filter; otherwise the command errors out before contacting YNAB.
+- After a successful apply, `server_knowledge` is still refreshed so later delta-mode runs remain correct.
+
+### 12.6 Tolerance Check
+
+For each tracked account, at the end of every sync run, YMCA compares the running balance against YNAB's reported `cleared_balance` (which is in the base currency):
+
+- Determine the **stronger currency**: the base currency when `divide_to_base: true`, the source currency when `divide_to_base: false`.
+- Convert both values to the stronger currency.
+- If `|tracked − cleared_balance| > 0.01` stronger-currency units, print a warning suggesting `ymca sync --rebuild-balance`.
+
+The warning is informational only. The sync run does not fail.
+
+### 12.7 Sign Inference Rules
+
+- **Default**: use the sign of the YNAB transaction amount (positive = inflow, negative = outflow). When the YNAB amount is non-zero, its sign **overrides** any sign embedded in the memo. This protects the tracked balance from stale or hand-edited memos where, for example, a transfer outflow ended up stamped with a ``+`` in its FX marker: the YNAB-side sign still drives the contribution.
+- **Zero-amount non-transfer**: the YNAB amount is `0`; the memo-embedded local amount still carries a sign. Use the memo sign.
+- **Zero-amount transfer**: the memo shows `+/-` literal prefix and the YNAB amount is `0`. Direction is ambiguous. Under `--rebuild-balance` the CLI prompts interactively (`(i)n/(o)ut/(s)kip`). Non-TTY plus `--apply` fails fast; dry-run without a TTY surfaces the ambiguous rows in the summary and skips them. The delta-mode sync never encounters this case for a new transaction (it would be converted uncleared), but if one shows up cleared, it is treated like any other 0-amount row per §12.4 with direction coming from the memo sign.
+
+### 12.8 Known Limitations
+
+The dual-marker model from §12.4 handles every user-driven **status change** on a tracked row without any local per-transaction storage. It cannot, however, handle user edits that change the underlying **amount or memo payload** of an already-FX-converted row. That leaves exactly one unsupported workflow:
+
+- **Editing a cleared/reconciled transaction that YMCA has already FX-converted.** The memo still carries the old source amount in the `[FX+]` marker, so the engine reads the original contribution and the 2×2 stays at `was_counted=True, should_be_counted=True` → no-op. Meanwhile YNAB's `cleared_balance` reflects the new amount. Drift appears in the next run's tolerance check.
+
+  Three sub-scenarios, all drift equally:
+  1. **Amount-only edit** (memo untouched): YMCA sees the unchanged `[FX+]` marker and no-ops. Tracked balance stays at the old memo amount; YNAB reports the new amount.
+  2. **Amount edit + memo wipe** (user clears the FX marker): the next sync sees an unmarked cleared row, re-FX-converts it, AND adds its **base-currency** amount into the tracked balance as if it were a source-currency amount. Double-counts plus silently rewrites the YNAB amount.
+  3. **Amount edit + selective memo edit**: every hand-edit either keeps the `[FX+]` marker (no-op → drift) or flips it back to `[FX]` (double-count on the next sync).
+
+**Recommended workflow** when a cleared row needs to change: delete the old transaction in YNAB and enter a fresh one. The delete surfaces in the next delta as `[FX+]` + cleared + deleted → **subtract** and flip to `[FX]`; the new entry surfaces as unmarked + cleared → **add** and FX-convert with a fresh `[FX+]` marker. Net effect: `−old + new` with no drift and no manual intervention.
+
+**Recovery from drift**: run `ymca sync --rebuild-balance --apply`. Rebuild re-derives the balance from every active FX-marked cleared row in the account and re-normalizes every marker bracket to match its current cleared/reconciled state. Drift from hand-edits reappears only if the user continues editing FX-marked rows after the rebuild.
+
+### 12.9 Interaction With Existing Skip Rules
+
+The top-level skip rules from §7.2 still apply to the FX conversion step:
+
+- Sentinel transactions are skipped for FX conversion (they already have a special memo shape).
+- Split transactions are still skipped; their local-currency amount does not contribute to the tracked balance.
+- Already-marked transactions (current `[FX]` / `[FX+]` or legacy) still skip FX conversion but are inspected by the balance algorithm as described in §12.4 and §12.5.

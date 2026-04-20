@@ -36,6 +36,7 @@ from ymca.models import (
     AccountSnapshot,
     AppState,
     FxRule,
+    NewTransactionRequest,
     PlanConfig,
     RemoteAccount,
     RemotePlan,
@@ -213,6 +214,11 @@ class CountingYnabClient:
             lambda: self._transactions_api.create_transaction(plan_id, payload)
         )
         return list(getattr(response.data, "transactions", None) or [])
+
+    def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
+        """YnabGateway.create_transaction: forwards to the production adapter."""
+        self._guard_write(plan_id)
+        return self._invoke(lambda: self._ynab.create_transaction(plan_id, request))
 
     def delete_transaction(self, plan_id: str, transaction_id: str) -> None:
         self._guard_write(plan_id)
@@ -451,18 +457,23 @@ def build_new_transaction(
     payee_name: str | None = None,
     payee_id: str | None = None,
     subtransactions: Sequence[Any] = (),
+    cleared: str = "uncleared",
 ) -> Any:
     """Construct a ``ynab.NewTransaction`` payload for ``create_transactions``.
 
     ``subtransactions`` must be a sequence of ``ynab.SaveSubTransaction``
     instances whose amounts sum to ``amount_milliunits`` (YNAB's invariant).
+
+    ``cleared`` defaults to ``"uncleared"`` to match YNAB's default; pass
+    ``"cleared"`` or ``"reconciled"`` when a test needs to exercise tracking
+    behavior that is gated on cleared status.
     """
     kwargs: dict[str, Any] = {
         "account_id": account_id,
         "var_date": date_,
         "amount": amount_milliunits,
         "memo": memo,
-        "cleared": "uncleared",
+        "cleared": cleared,
         "approved": False,
     }
     if payee_name is not None:

@@ -17,6 +17,7 @@ It is designed for a local, privacy-friendly workflow:
 - Appends a deterministic FX memo marker like `[FX] -123.45 HKD (rate: 7.8 HKD/USD)` (the `rate:` value is rounded to three decimal places for the memo; conversion still uses your full configured rate).
 - Dry-runs by default and only writes when you pass `--apply`.
 - Stores YNAB `server_knowledge` locally after successful apply runs.
+- Optionally maintains a running **source-currency balance** per account on a dedicated sentinel transaction, so you can see at a glance that your HKD-denominated account is sitting at `HKD 1,234.56` even though YNAB only shows the USD-converted figure.
 
 ## Install
 
@@ -63,13 +64,13 @@ uv run ymca discover
 6. Run a dry conversion preview:
 
 ```bash
-uv run ymca convert
+uv run ymca sync
 ```
 
 7. Apply the updates once the preview looks right:
 
 ```bash
-uv run ymca convert --apply
+uv run ymca sync --apply
 ```
 
 ## Config File
@@ -97,6 +98,7 @@ accounts:
     name: HSBC HK HKD
     currency: HKD
     enabled: true
+    track_local_balance: true  # optional; opts this account in to local currency tracking
   hsbc_uk_gbp:
     name: HSBC UK GBP
     currency: GBP
@@ -121,6 +123,7 @@ Rules:
 - `divide_to_base: true` means `base = source / rate`, for example `7.8 HKD/USD`.
 - `divide_to_base: false` means `base = source * rate`, for example `1.35 USD/GBP`.
 - Only enabled foreign-currency accounts are converted.
+- `track_local_balance` defaults to `false`. It may be set to `true` on any non-base-currency account; setting it on a base-currency account is rejected by `config check`.
 
 ## Runtime Paths And Environment Variables
 
@@ -128,7 +131,7 @@ YMCA has two different path behaviors, which is the main thing to keep in mind w
 
 `ymca config init --path ...` and `ymca config check --path ...` operate on the specific file path you give them.
 
-`ymca discover` and `ymca convert` do not take a config `--path` flag. They use the runtime path resolution below:
+`ymca discover` and `ymca sync` do not take a config `--path` flag. They use the runtime path resolution below:
 
 - `YMCA_CONFIG_PATH`, if set
 - otherwise `~/.config/ymca/config.yaml`
@@ -148,7 +151,7 @@ Examples:
 
 ```bash
 YMCA_CONFIG_PATH=~/work/ymca/config.yaml uv run ymca discover
-YMCA_CONFIG_PATH=~/work/ymca/config.yaml YMCA_STATE_PATH=~/work/ymca/state.yaml uv run ymca convert --apply
+YMCA_CONFIG_PATH=~/work/ymca/config.yaml YMCA_STATE_PATH=~/work/ymca/state.yaml uv run ymca sync --apply
 uv run ymca config check --path ~/work/ymca/config.yaml
 ```
 
@@ -168,31 +171,39 @@ Check config and credentials:
 uv run ymca config check
 ```
 
-Dry-run conversion:
+Dry-run sync:
 
 ```bash
-uv run ymca convert
+uv run ymca sync
 ```
 
-Apply conversion:
+Apply sync:
 
 ```bash
-uv run ymca convert --apply
+uv run ymca sync --apply
 ```
 
-Limit conversion to one or more configured account aliases:
+Limit the sync to one or more configured account aliases:
 
 ```bash
-uv run ymca convert --account hsbc_hk_hkd --account hsbc_uk_gbp
+uv run ymca sync --account hsbc_hk_hkd --account hsbc_uk_gbp
 ```
 
 Bootstrap from a specific date:
 
 ```bash
-uv run ymca convert --bootstrap-since 2025-01-01
+uv run ymca sync --bootstrap-since 2025-01-01
 ```
 
 If you pass `--bootstrap-since`, it takes precedence for that run and ignores saved `server_knowledge`.
+
+Rebuild the local-currency sentinel for every tracked account in scope:
+
+```bash
+uv run ymca sync --rebuild-balance --apply
+```
+
+Use this when the tolerance check at the end of a normal run warned about drift, or after you've made manual edits to cleared transactions. `--rebuild-balance` is mutually exclusive with `--bootstrap-since`; see the next section for what it does.
 
 ## Sync And State
 
@@ -206,8 +217,9 @@ State stores:
 
 - resolved YNAB budget and account IDs
 - the last saved `server_knowledge` per configured plan alias
+- the YNAB transaction id of each tracked account's local-currency sentinel (`sentinel_ids` map). This is persisted on every successful `--apply` run and used on the next run to look the sentinel up directly, so a quiet delta that returns zero transactions still updates the right row.
 
-Normal `convert` runs use saved `server_knowledge` when present. On a first run with no saved knowledge, YMCA asks for a bootstrap start date unless you provide `--bootstrap-since`.
+Normal `sync` runs use saved `server_knowledge` when present. On a first run with no saved knowledge, YMCA asks for a bootstrap start date unless you provide `--bootstrap-since`.
 
 Dry runs do not save state. Successful `--apply` runs do save state.
 
@@ -221,6 +233,58 @@ Dry runs do not save state. Successful `--apply` runs do save state.
 - Transfers are converted too, and transfer markers use a literal `+/-` amount prefix.
 - Split transactions are skipped by the main converter.
 - Transactions that already contain either the current FX marker or the old legacy FX marker are skipped.
+
+## Local Currency Tracking
+
+Opt-in, per-account. Adds `track_local_balance: true` to a foreign-currency account, and `ymca sync` will additionally maintain a running **source-currency** balance (HKD, GBP, etc.) for that account on a dedicated sentinel transaction inside the account.
+
+Why a sentinel transaction? The YNAB public API does not expose an "update account name" endpoint, so we can't rewrite `HSBC HK [HKD]` to `HSBC HK [HKD 1,234.56]` the way you might expect. Instead YMCA creates one zero-amount sentinel transaction per tracked account with:
+
+- Payee: `[YMCA] Tracked Balance`
+- Cleared status: `reconciled` (to keep it out of the "needs clearing" bucket in the YNAB UI)
+- Flag color: `green` (makes it easy to spot in the register; re-applied on every run so a hand-cleared flag is restored automatically)
+- Amount: `0` (so it doesn't affect YNAB's cleared balance)
+- Memo: `[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | updated 2026-04-19T14:30:45Z | prev 1,200.00 2026-04-18T14:30:45Z | drift 0.00 USD`
+
+Open the sentinel in the YNAB register and the memo shows the current source-currency balance plus a drift check against YNAB's own cleared_balance. YMCA upserts the sentinel on every sync run; it never appears twice per account.
+
+Per-run behavior (delta mode, i.e. every normal `ymca sync`):
+
+The FX marker carries a **counted bit** that doubles as a per-transaction ledger, so no local per-transaction database is needed:
+
+- `[FX]`  — converted but NOT counted toward the tracked balance (uncleared rows, or rows in accounts without tracking).
+- `[FX+]` — converted AND counted.
+
+On every delta run the engine checks `was_counted` (derived from the bracket) against `should_be_counted` (derived from the current cleared/deleted state) and acts on the 2×2:
+
+| `was_counted` | `should_be_counted` | Action |
+|---------------|---------------------|--------|
+| False | False | No-op. |
+| False | True  | **Add** source amount, flip marker to `[FX+]`. |
+| True  | False | **Subtract** source amount, flip marker to `[FX]`. |
+| True  | True  | No-op (prevents the `cleared → reconciled` double-count). |
+
+In practice this handles every ordinary YNAB operation on a tracked row: `uncleared → cleared/reconciled`, `cleared → reconciled`, `cleared → uncleared`, `cleared → deleted`, even flip-flops like `cleared → uncleared → cleared` (net zero). Legacy `(FX rate: ...)` memos get migrated to the new form on first touch.
+
+**Transfer transactions (known rough edge):** In YNAB, both legs of a transfer share the same memo, including the `[FX]` / `[FX+]` counted bit. YMCA tracks balance **per account**, but the ledger marker lives on **one** shared string. If the two sides are not cleared, deleted, or otherwise “in or out of the balance” in lockstep—typical when one leg clears before the other, or you delete one side while the other still shows an old marker—the shared memo can imply a counted state that does not match what that account’s balance should be. When that happens the sentinel can drift; use `ymca sync --rebuild-balance --apply` to recompute from all cleared rows. In practice, keep transfer legs aligned (same cleared state when possible) or run a rebuild after edits that leave the two sides out of sync.
+
+Known limitation — editing a cleared, already-FX-converted row is **not** supported. The memo still holds the original source amount, so YMCA can't tell the amount changed. Three sub-scenarios all drift:
+
+1. Amount-only edit → no-op, drift equal to the amount delta.
+2. Amount edit + memo wipe → double-counts AND silently rewrites the YNAB amount on the next sync.
+3. Amount edit + selective memo edit → double-counts or drifts depending on which edit you make.
+
+**Always delete-and-re-enter** when a cleared transaction needs to change. The delete path subtracts the old contribution; the fresh entry adds the new one. Net effect: `−old + new` with no drift.
+
+The tolerance check at the end of each run warns when the tracked balance drifts beyond `0.01` of the stronger currency versus YNAB's `cleared_balance`. Recovery is `ymca sync --rebuild-balance`.
+
+Rebuild mode (`ymca sync --rebuild-balance`):
+
+- Ignores saved `server_knowledge`; fetches every active transaction in each tracked account in scope.
+- Parses the FX marker (both the current `[FX] ...` form and the legacy `(FX rate: ...)` form) on every cleared/reconciled non-deleted non-sentinel row and sums the source-currency amounts to recompute the balance from scratch.
+- Prompts interactively for any 0-amount transfer whose direction cannot be inferred from the YNAB amount (`(i)n / (o)ut / (s)kip`). Non-interactive contexts with `--apply` fail fast.
+
+The rebuild respects `--account ALIAS` so you can recover a single account without rescanning the others. It is mutually exclusive with `--bootstrap-since`.
 
 ## Deprecated One-Off Helpers
 

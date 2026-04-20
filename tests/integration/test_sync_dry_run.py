@@ -1,4 +1,4 @@
-"""Live-API coverage for workflow W4: ``ymca convert`` (dry run).
+"""Live-API coverage for workflow W4: ``ymca sync`` (dry run).
 
 Seeds a rich dataset covering the edge cases documented in
 ``docs/edge-cases.md`` and asserts that :func:`build_prepared_conversion`
@@ -45,7 +45,7 @@ def _prompt_never_called() -> date:
 
 
 @pytest.mark.integration
-def test_convert_dry_run_produces_expected_updates_and_skips(
+def test_sync_dry_run_produces_expected_updates_and_skips(
     integration_env: IntegrationEnvironment,
 ) -> None:
     account_plan = resolve_integration_accounts(integration_env.accounts)

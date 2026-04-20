@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
+from uuid import UUID
 
 import ynab
 from ynab.rest import ApiException  # type: ignore[attr-defined]
@@ -10,6 +11,8 @@ from ynab.rest import ApiException  # type: ignore[attr-defined]
 from .errors import ApiError
 from .models import (
     AccountSnapshot,
+    ClearedStatus,
+    NewTransactionRequest,
     RemoteAccount,
     RemotePlan,
     RemoteTransaction,
@@ -46,7 +49,10 @@ class YnabClient:
         try:
             response = plans_api.get_plans(include_accounts=include_accounts)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("list plans", exc)) from exc
+            raise ApiError(
+                _format_api_exception("list plans", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return tuple(self._map_plan(plan) for plan in response.data.plans)
 
@@ -55,7 +61,10 @@ class YnabClient:
         try:
             response = accounts_api.get_accounts(plan_id)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("list accounts", exc)) from exc
+            raise ApiError(
+                _format_api_exception("list accounts", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return AccountSnapshot(
             accounts=tuple(self._map_account(account) for account in response.data.accounts),
@@ -79,7 +88,10 @@ class YnabClient:
                 last_knowledge_of_server=last_knowledge_of_server,
             )
         except ApiException as exc:
-            raise ApiError(_format_api_exception("list account transactions", exc)) from exc
+            raise ApiError(
+                _format_api_exception("list account transactions", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return TransactionSnapshot(
             transactions=tuple(
@@ -93,22 +105,31 @@ class YnabClient:
         try:
             response = transactions_api.get_transaction_by_id(plan_id, transaction_id)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("get transaction detail", exc)) from exc
+            raise ApiError(
+                _format_api_exception("get transaction detail", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
         return self._map_transaction_detail(response.data.transaction)
 
     def update_transaction(self, plan_id: str, request: TransactionUpdateRequest) -> None:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        existing_kwargs: dict[str, Any] = {
+            "amount": request.amount_milliunits,
+            "memo": request.memo,
+        }
+        if request.flag_color is not None:
+            existing_kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
         payload = ynab.PutTransactionWrapper(
-            transaction=ynab.ExistingTransaction(
-                amount=request.amount_milliunits,
-                memo=request.memo,
-            )
+            transaction=ynab.ExistingTransaction(**existing_kwargs)
         )
         try:
             transactions_api.update_transaction(plan_id, request.transaction_id, payload)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("update transaction", exc)) from exc
+            raise ApiError(
+                _format_api_exception("update transaction", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
     def update_transactions(
         self, plan_id: str, requests: Sequence[TransactionUpdateRequest]
@@ -119,18 +140,78 @@ class YnabClient:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
         payload = ynab.PatchTransactionsWrapper(
             transactions=[
-                ynab.SaveTransactionWithIdOrImportId(
-                    id=request.transaction_id,
-                    amount=request.amount_milliunits,
-                    memo=request.memo,
-                )
-                for request in requests
+                self._build_patch_transaction(request) for request in requests
             ]
         )
         try:
             transactions_api.update_transactions(plan_id, payload)
         except ApiException as exc:
-            raise ApiError(_format_api_exception("update transactions", exc)) from exc
+            raise ApiError(
+                _format_api_exception("update transactions", exc),
+                status=_api_exception_status(exc),
+            ) from exc
+
+    @staticmethod
+    def _build_patch_transaction(request: TransactionUpdateRequest) -> Any:
+        kwargs: dict[str, Any] = {
+            "id": request.transaction_id,
+            "amount": request.amount_milliunits,
+            "memo": request.memo,
+        }
+        if request.flag_color is not None:
+            kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
+        return ynab.SaveTransactionWithIdOrImportId(**kwargs)
+
+    def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
+        transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        new_kwargs: dict[str, Any] = {
+            "account_id": UUID(request.account_id),
+            "date": request.date,
+            "amount": request.amount_milliunits,
+            "payee_name": request.payee_name,
+            "memo": request.memo,
+            "cleared": ynab.TransactionClearedStatus(request.cleared),
+        }
+        if request.flag_color is not None:
+            new_kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
+        payload = ynab.PostTransactionsWrapper(
+            transaction=ynab.NewTransaction(**new_kwargs)
+        )
+        try:
+            response = transactions_api.create_transaction(plan_id, payload)
+        except ApiException as exc:
+            raise ApiError(
+                _format_api_exception("create transaction", exc),
+                status=_api_exception_status(exc),
+            ) from exc
+
+        # YNAB's ``SaveTransactionsResponse`` wraps the payload in ``data``.
+        data = getattr(response, "data", response)
+
+        # ``transaction_ids`` is the canonical list per the YNAB OpenAPI spec;
+        # it is populated for both single-transaction and batch creation.
+        transaction_ids = getattr(data, "transaction_ids", None) or []
+        if transaction_ids:
+            return str(transaction_ids[0])
+
+        transaction = getattr(data, "transaction", None)
+        if transaction is not None and getattr(transaction, "id", None) is not None:
+            return str(transaction.id)
+
+        created = getattr(data, "transactions", None) or []
+        if created:
+            return str(created[0].id)
+        raise ApiError("Create transaction response did not include a transaction id.")
+
+    def delete_transaction(self, plan_id: str, transaction_id: str) -> None:
+        transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        try:
+            transactions_api.delete_transaction(plan_id, transaction_id)
+        except ApiException as exc:
+            raise ApiError(
+                _format_api_exception("delete transaction", exc),
+                status=_api_exception_status(exc),
+            ) from exc
 
     def _map_plan(self, raw_plan: Any) -> RemotePlan:
         raw_accounts = getattr(raw_plan, "accounts", None) or []
@@ -141,11 +222,13 @@ class YnabClient:
         )
 
     def _map_account(self, raw_account: Any) -> RemoteAccount:
+        cleared_balance = getattr(raw_account, "cleared_balance", 0)
         return RemoteAccount(
             id=str(raw_account.id),
             name=str(raw_account.name),
             deleted=bool(raw_account.deleted),
             closed=bool(raw_account.closed),
+            cleared_balance_milliunits=int(cleared_balance) if cleared_balance is not None else 0,
         )
 
     def _map_transaction(self, raw_transaction: Any) -> RemoteTransaction:
@@ -158,6 +241,8 @@ class YnabClient:
             transfer_account_id=_optional_string(raw_transaction.transfer_account_id),
             transfer_transaction_id=_optional_string(raw_transaction.transfer_transaction_id),
             deleted=bool(raw_transaction.deleted),
+            payee_name=_optional_string(getattr(raw_transaction, "payee_name", None)),
+            cleared=_map_cleared(getattr(raw_transaction, "cleared", None)),
         )
 
     def _map_transaction_detail(self, raw_transaction: Any) -> RemoteTransactionDetail:
@@ -172,6 +257,8 @@ class YnabClient:
             transfer_transaction_id=_optional_string(raw_transaction.transfer_transaction_id),
             deleted=bool(raw_transaction.deleted),
             subtransaction_count=len(raw_subtransactions),
+            payee_name=_optional_string(getattr(raw_transaction, "payee_name", None)),
+            cleared=_map_cleared(getattr(raw_transaction, "cleared", None)),
         )
 
     def _require_api(self, api: Any | None, api_name: str) -> Any:
@@ -186,6 +273,28 @@ def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _api_exception_status(exc: ApiException) -> int | None:
+    raw_status = getattr(exc, "status", None)
+    if isinstance(raw_status, int):
+        return raw_status
+    if isinstance(raw_status, str) and raw_status.isdigit():
+        return int(raw_status)
+    return None
+
+
+def _map_cleared(value: Any) -> ClearedStatus:
+    """Normalize YNAB's TransactionClearedStatus enum to our Literal."""
+    if value is None:
+        return "uncleared"
+    raw = getattr(value, "value", value)
+    text = str(raw).lower()
+    if text == "cleared":
+        return "cleared"
+    if text == "reconciled":
+        return "reconciled"
+    return "uncleared"
 
 
 def _require_date(value: Any, field_name: str) -> date:

@@ -74,6 +74,10 @@ def load_config(path: Path) -> AppConfig:
                     account_map.get("enabled", True),
                     f"accounts.{alias_text}.enabled",
                 ),
+                track_local_balance=_parse_bool(
+                    account_map.get("track_local_balance", False),
+                    f"accounts.{alias_text}.track_local_balance",
+                ),
             )
         )
 
@@ -111,6 +115,13 @@ def load_config(path: Path) -> AppConfig:
                 f"{account.alias!r} currency {account.currency}."
             )
 
+    for account in accounts:
+        if account.track_local_balance and account.currency == base_currency:
+            raise ConfigError(
+                f"Account {account.alias!r} uses the base currency {base_currency}; "
+                "track_local_balance is only valid for foreign-currency accounts."
+            )
+
     plan = PlanConfig(
         alias=alias,
         name=name,
@@ -136,6 +147,10 @@ accounts:
     name: Example HKD Account
     currency: HKD
     enabled: true
+    # Optional: opt-in to local-currency balance tracking. When true, ymca sync
+    # will maintain a sentinel transaction in this account whose memo shows the
+    # running source-currency balance. Only valid for foreign-currency accounts.
+    # track_local_balance: false
   gbp_wallet:
     name: Example GBP Account
     currency: GBP

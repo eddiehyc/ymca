@@ -40,10 +40,23 @@ def load_state(path: Path) -> AppState:
         server_knowledge = plan_map.get("server_knowledge")
         if server_knowledge is not None:
             server_knowledge = _parse_int(server_knowledge, f"plans.{alias_text}.server_knowledge")
+
+        raw_sentinel_ids = plan_map.get("sentinel_ids") or {}
+        sentinel_ids_map = _require_mapping(raw_sentinel_ids, f"plans.{alias_text}.sentinel_ids")
+        sentinel_ids = {
+            _parse_non_empty_string(
+                account_alias, f"plans.{alias_text}.sentinel_ids.<alias>"
+            ): _parse_non_empty_string(
+                txn_id, f"plans.{alias_text}.sentinel_ids.<txn_id>"
+            )
+            for account_alias, txn_id in sentinel_ids_map.items()
+        }
+
         plans[alias_text] = PlanState(
             plan_id=plan_id,
             account_ids=account_ids,
             server_knowledge=server_knowledge,
+            sentinel_ids=sentinel_ids,
         )
 
     return AppState(version=version, plans=plans)
@@ -53,16 +66,25 @@ def save_state(path: Path, state: AppState) -> None:
     payload = {
         "version": state.version,
         "plans": {
-            alias: {
-                "plan_id": plan_state.plan_id,
-                "account_ids": dict(plan_state.account_ids),
-                "server_knowledge": plan_state.server_knowledge,
-            }
+            alias: _plan_payload(plan_state)
             for alias, plan_state in state.plans.items()
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _plan_payload(plan_state: PlanState) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "plan_id": plan_state.plan_id,
+        "account_ids": dict(plan_state.account_ids),
+        "server_knowledge": plan_state.server_knowledge,
+    }
+    # Omit the sentinel map when empty so plans without local-currency tracking
+    # keep the same on-disk shape they had before the feature shipped.
+    if plan_state.sentinel_ids:
+        payload["sentinel_ids"] = dict(plan_state.sentinel_ids)
+    return payload
 
 
 def plan_state_for(state: AppState, alias: str) -> PlanState | None:
@@ -76,12 +98,21 @@ def upsert_plan_state(
     plan_id: str,
     account_ids: Mapping[str, str],
     server_knowledge: int | None,
+    sentinel_ids: Mapping[str, str] | None = None,
 ) -> AppState:
     plans = dict(state.plans)
+    existing = plans.get(alias)
+    if sentinel_ids is None:
+        merged_sentinel_ids: Mapping[str, str] = (
+            dict(existing.sentinel_ids) if existing is not None else {}
+        )
+    else:
+        merged_sentinel_ids = dict(sentinel_ids)
     plans[alias] = PlanState(
         plan_id=plan_id,
         account_ids=dict(account_ids),
         server_knowledge=server_knowledge,
+        sentinel_ids=merged_sentinel_ids,
     )
     return AppState(version=STATE_VERSION, plans=plans)
 

@@ -1,6 +1,6 @@
-"""Live-API coverage for workflow W5: ``ymca convert --apply``.
+"""Live-API coverage for workflow W5: ``ymca sync --apply``.
 
-Runs the full convert pipeline against a small seeded dataset, persisting
+Runs the full sync pipeline against a small seeded dataset, persisting
 amount and memo changes to YNAB, and then re-reads the plan to verify that
 the mutations landed exactly as the in-memory :class:`PreparedConversion`
 predicted.
@@ -38,11 +38,11 @@ SEED_SINCE_DATE = date.today() - timedelta(days=1)
 
 
 def _prompt_never_called() -> date:
-    pytest.fail("convert --apply should not prompt when bootstrap_since is given.")
+    pytest.fail("sync --apply should not prompt when bootstrap_since is given.")
 
 
 @pytest.mark.integration
-def test_convert_apply_persists_amount_and_memo_changes(
+def test_sync_apply_persists_amount_and_memo_changes(
     integration_env: IntegrationEnvironment,
 ) -> None:
     account_plan = resolve_integration_accounts(integration_env.accounts)
@@ -131,7 +131,7 @@ def test_convert_apply_persists_amount_and_memo_changes(
 
 
 @pytest.mark.integration
-def test_convert_apply_handles_transfer_pair_once(
+def test_sync_apply_handles_transfer_pair_once(
     integration_env: IntegrationEnvironment,
 ) -> None:
     """Exercise edge case E2 (transfer pair) if a second HKD account exists."""
