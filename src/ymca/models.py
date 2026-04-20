@@ -117,6 +117,15 @@ class RemoteTransaction:
 
 
 @dataclass(frozen=True, slots=True)
+class RemoteSubTransaction:
+    amount_milliunits: int
+    payee_id: str | None = None
+    payee_name: str | None = None
+    category_id: str | None = None
+    memo: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RemoteTransactionDetail:
     id: str
     date: date
@@ -127,8 +136,13 @@ class RemoteTransactionDetail:
     transfer_transaction_id: str | None
     deleted: bool
     subtransaction_count: int
+    payee_id: str | None = None
     payee_name: str | None = None
+    category_id: str | None = None
     cleared: ClearedStatus = "uncleared"
+    approved: bool = False
+    flag_color: str | None = None
+    subtransactions: tuple[RemoteSubTransaction, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +157,14 @@ class TransactionUpdateRequest:
     amount_milliunits: int | None
     memo: str
     flag_color: str | None = None
+    account_id: str | None = None
+    date: date | None = None
+    payee_id: str | None = None
+    payee_name: str | None = None
+    category_id: str | None = None
+    cleared: ClearedStatus | None = None
+    approved: bool | None = None
+    subtransactions: tuple[RemoteSubTransaction, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

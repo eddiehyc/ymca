@@ -12,6 +12,7 @@ from ymca.models import (
     AccountSnapshot,
     RemoteAccount,
     RemotePlan,
+    RemoteSubTransaction,
     RemoteTransaction,
     RemoteTransactionDetail,
     TransactionSnapshot,
@@ -22,6 +23,12 @@ def _detail(
     transaction: RemoteTransaction,
     *,
     subtransaction_count: int = 0,
+    payee_id: str | None = None,
+    payee_name: str | None = None,
+    category_id: str | None = None,
+    approved: bool = False,
+    flag_color: str | None = None,
+    subtransactions: tuple[RemoteSubTransaction, ...] = (),
 ) -> RemoteTransactionDetail:
     return RemoteTransactionDetail(
         id=transaction.id,
@@ -33,6 +40,12 @@ def _detail(
         transfer_transaction_id=transaction.transfer_transaction_id,
         deleted=transaction.deleted,
         subtransaction_count=subtransaction_count,
+        payee_id=payee_id,
+        payee_name=payee_name,
+        category_id=category_id,
+        approved=approved,
+        flag_color=flag_color,
+        subtransactions=subtransactions,
     )
 
 
@@ -401,7 +414,28 @@ fx_rates:
                 server_knowledge=1,
             )
         },
-        transaction_details={"txn-1": _detail(transaction, subtransaction_count=2)},
+        transaction_details={
+            "txn-1": _detail(
+                transaction,
+                subtransaction_count=2,
+                payee_id="11111111-1111-1111-1111-111111111111",
+                payee_name="Transfer : Cash",
+                approved=True,
+                flag_color="blue",
+                subtransactions=(
+                    RemoteSubTransaction(
+                        amount_milliunits=-39000,
+                        category_id="22222222-2222-2222-2222-222222222222",
+                        memo="Food",
+                    ),
+                    RemoteSubTransaction(
+                        amount_milliunits=-39000,
+                        category_id="33333333-3333-3333-3333-333333333333",
+                        memo="Taxi",
+                    ),
+                ),
+            )
+        },
         transaction_snapshots_by_account={
             "acct-1": [
                 TransactionSnapshot(
@@ -427,7 +461,16 @@ fx_rates:
     assert exit_code == 0
     assert len(gateway.updates) == 1
     assert gateway.update_batches == []
-    assert gateway.updates[0].amount_milliunits is None
+    assert gateway.updates[0].amount_milliunits == -78000
     assert gateway.updates[0].memo == "FPS | [FX] -/+78 HKD (rate: 0.12821 USD/HKD)"
+    assert gateway.updates[0].account_id == "acct-1"
+    assert gateway.updates[0].date == date(2026, 4, 10)
+    assert gateway.updates[0].payee_id == "11111111-1111-1111-1111-111111111111"
+    assert gateway.updates[0].approved is True
+    assert gateway.updates[0].flag_color == "blue"
+    assert len(gateway.updates[0].subtransactions) == 2
+    assert gateway.updates[0].subtransactions[0].category_id == (
+        "22222222-2222-2222-2222-222222222222"
+    )
     assert "Prepared memo migrations: 1" in captured.out
     assert "Writes applied: 1" in captured.out

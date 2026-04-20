@@ -15,6 +15,7 @@ from .models import (
     NewTransactionRequest,
     RemoteAccount,
     RemotePlan,
+    RemoteSubTransaction,
     RemoteTransaction,
     RemoteTransactionDetail,
     TransactionSnapshot,
@@ -118,8 +119,27 @@ class YnabClient:
             "amount": request.amount_milliunits,
             "memo": request.memo,
         }
+        if request.account_id is not None:
+            existing_kwargs["account_id"] = UUID(request.account_id)
+        if request.date is not None:
+            existing_kwargs["date"] = request.date
+        if request.payee_id is not None:
+            existing_kwargs["payee_id"] = UUID(request.payee_id)
+        if request.payee_name is not None:
+            existing_kwargs["payee_name"] = request.payee_name
+        if request.category_id is not None:
+            existing_kwargs["category_id"] = UUID(request.category_id)
+        if request.cleared is not None:
+            existing_kwargs["cleared"] = ynab.TransactionClearedStatus(request.cleared)
+        if request.approved is not None:
+            existing_kwargs["approved"] = request.approved
         if request.flag_color is not None:
             existing_kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
+        if request.subtransactions:
+            existing_kwargs["subtransactions"] = [
+                self._build_save_subtransaction(subtransaction)
+                for subtransaction in request.subtransactions
+            ]
         payload = ynab.PutTransactionWrapper(
             transaction=ynab.ExistingTransaction(**existing_kwargs)
         )
@@ -161,6 +181,19 @@ class YnabClient:
         if request.flag_color is not None:
             kwargs["flag_color"] = ynab.TransactionFlagColor(request.flag_color)
         return ynab.SaveTransactionWithIdOrImportId(**kwargs)
+
+    @staticmethod
+    def _build_save_subtransaction(subtransaction: RemoteSubTransaction) -> Any:
+        kwargs: dict[str, Any] = {
+            "amount": subtransaction.amount_milliunits,
+            "memo": subtransaction.memo,
+            "payee_name": subtransaction.payee_name,
+        }
+        if subtransaction.payee_id is not None:
+            kwargs["payee_id"] = UUID(subtransaction.payee_id)
+        if subtransaction.category_id is not None:
+            kwargs["category_id"] = UUID(subtransaction.category_id)
+        return ynab.SaveSubTransaction(**kwargs)
 
     def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
@@ -257,8 +290,26 @@ class YnabClient:
             transfer_transaction_id=_optional_string(raw_transaction.transfer_transaction_id),
             deleted=bool(raw_transaction.deleted),
             subtransaction_count=len(raw_subtransactions),
+            payee_id=_optional_string(getattr(raw_transaction, "payee_id", None)),
             payee_name=_optional_string(getattr(raw_transaction, "payee_name", None)),
+            category_id=_optional_string(getattr(raw_transaction, "category_id", None)),
             cleared=_map_cleared(getattr(raw_transaction, "cleared", None)),
+            approved=bool(getattr(raw_transaction, "approved", False)),
+            flag_color=_map_flag_color(getattr(raw_transaction, "flag_color", None)),
+            subtransactions=tuple(
+                self._map_subtransaction(subtransaction)
+                for subtransaction in raw_subtransactions
+            ),
+        )
+
+    @staticmethod
+    def _map_subtransaction(raw_subtransaction: Any) -> RemoteSubTransaction:
+        return RemoteSubTransaction(
+            amount_milliunits=int(raw_subtransaction.amount),
+            payee_id=_optional_string(getattr(raw_subtransaction, "payee_id", None)),
+            payee_name=_optional_string(getattr(raw_subtransaction, "payee_name", None)),
+            category_id=_optional_string(getattr(raw_subtransaction, "category_id", None)),
+            memo=getattr(raw_subtransaction, "memo", None),
         )
 
     def _require_api(self, api: Any | None, api_name: str) -> Any:
@@ -295,6 +346,13 @@ def _map_cleared(value: Any) -> ClearedStatus:
     if text == "reconciled":
         return "reconciled"
     return "uncleared"
+
+
+def _map_flag_color(value: Any) -> str | None:
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    return str(raw)
 
 
 def _require_date(value: Any, field_name: str) -> date:

@@ -119,11 +119,7 @@ def build_legacy_memo_migration_plan(
                     old_memo=transaction.memo,
                     new_memo=new_memo,
                     use_single_update=detail.subtransaction_count > 0,
-                    request=TransactionUpdateRequest(
-                        transaction_id=transaction.id,
-                        amount_milliunits=None,
-                        memo=new_memo,
-                    ),
+                    request=_build_update_request(detail=detail, new_memo=new_memo),
                 )
             )
 
@@ -156,6 +152,34 @@ def _detail_skip_reason(transaction: RemoteTransactionDetail) -> str | None:
     if transaction.deleted:
         return "deleted"
     return None
+
+
+def _build_update_request(
+    *,
+    detail: RemoteTransactionDetail,
+    new_memo: str,
+) -> TransactionUpdateRequest:
+    if detail.subtransaction_count == 0:
+        return TransactionUpdateRequest(
+            transaction_id=detail.id,
+            amount_milliunits=None,
+            memo=new_memo,
+        )
+
+    return TransactionUpdateRequest(
+        transaction_id=detail.id,
+        amount_milliunits=detail.amount_milliunits,
+        memo=new_memo,
+        flag_color=detail.flag_color,
+        account_id=detail.account_id,
+        date=detail.date,
+        payee_id=detail.payee_id,
+        payee_name=detail.payee_name,
+        category_id=detail.category_id,
+        cleared=detail.cleared,
+        approved=detail.approved,
+        subtransactions=detail.subtransactions,
+    )
 
 
 def _select_accounts(

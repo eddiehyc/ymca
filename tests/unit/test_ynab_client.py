@@ -23,7 +23,7 @@ from ynab.rest import ApiException  # type: ignore[attr-defined]
 
 from ymca import ynab_client as ynab_client_module
 from ymca.errors import ApiError
-from ymca.models import NewTransactionRequest, TransactionUpdateRequest
+from ymca.models import NewTransactionRequest, RemoteSubTransaction, TransactionUpdateRequest
 from ymca.ynab_client import (
     YnabClient,
     _format_api_exception,
@@ -98,6 +98,13 @@ def _make_transaction(
     transfer_account_id: str | None = None,
     transfer_transaction_id: str | None = None,
     deleted: bool = False,
+    payee_id: str | None = None,
+    payee_name: str | None = None,
+    category_id: str | None = None,
+    cleared: object = "uncleared",
+    approved: bool = False,
+    flag_color: object | None = None,
+    subtransactions: list[Any] | None = None,
 ) -> Any:
     return SimpleNamespace(
         id=id_,
@@ -108,6 +115,13 @@ def _make_transaction(
         transfer_account_id=transfer_account_id,
         transfer_transaction_id=transfer_transaction_id,
         deleted=deleted,
+        payee_id=payee_id,
+        payee_name=payee_name,
+        category_id=category_id,
+        cleared=cleared,
+        approved=approved,
+        flag_color=flag_color,
+        subtransactions=[] if subtransactions is None else subtransactions,
     )
 
 
@@ -340,8 +354,30 @@ def test_ynab_client_get_transaction_detail_maps_subtransaction_count(
         def get_transaction_by_id(self, plan_id: str, transaction_id: str) -> Any:
             assert plan_id == "p1"
             assert transaction_id == "t1"
-            transaction = _make_transaction()
-            transaction.subtransactions = [SimpleNamespace(), SimpleNamespace()]
+            transaction = _make_transaction(
+                payee_id="11111111-1111-1111-1111-111111111111",
+                payee_name="Transfer : Cash",
+                category_id="22222222-2222-2222-2222-222222222222",
+                cleared=SimpleNamespace(value="cleared"),
+                approved=True,
+                flag_color=SimpleNamespace(value="blue"),
+                subtransactions=[
+                    SimpleNamespace(
+                        amount=-500,
+                        payee_id="33333333-3333-3333-3333-333333333333",
+                        payee_name="Food",
+                        category_id="44444444-4444-4444-4444-444444444444",
+                        memo="Dinner",
+                    ),
+                    SimpleNamespace(
+                        amount=-500,
+                        payee_id=None,
+                        payee_name=None,
+                        category_id="55555555-5555-5555-5555-555555555555",
+                        memo="Taxi",
+                    ),
+                ],
+            )
             return SimpleNamespace(data=SimpleNamespace(transaction=transaction))
 
     _install_sdk_fakes(
@@ -353,6 +389,13 @@ def test_ynab_client_get_transaction_detail_maps_subtransaction_count(
     with YnabClient("secret") as client:
         detail = client.get_transaction_detail("p1", "t1")
     assert detail.subtransaction_count == 2
+    assert detail.payee_id == "11111111-1111-1111-1111-111111111111"
+    assert detail.category_id == "22222222-2222-2222-2222-222222222222"
+    assert detail.cleared == "cleared"
+    assert detail.approved is True
+    assert detail.flag_color == "blue"
+    assert detail.subtransactions[0].payee_id == "33333333-3333-3333-3333-333333333333"
+    assert detail.subtransactions[1].memo == "Taxi"
 
 
 def test_ynab_client_get_transaction_detail_wraps_exception(
@@ -458,6 +501,78 @@ def test_ynab_client_update_transaction_forwards_flag_color_when_set(
     with YnabClient("secret") as client:
         client.update_transaction("p1", request)
     assert captured["payload"].transaction.flag_color == "green"
+
+
+def test_ynab_client_update_transaction_forwards_split_payload_when_set(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _TransactionsApi(_FakeApi):
+        def update_transaction(
+            self, plan_id: str, transaction_id: str, payload: Any
+        ) -> Any:
+            captured["payload"] = payload
+            return SimpleNamespace()
+
+    monkeypatch.setattr(
+        ynab,
+        "PutTransactionWrapper",
+        lambda transaction: SimpleNamespace(transaction=transaction),
+    )
+    monkeypatch.setattr(
+        ynab,
+        "ExistingTransaction",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        ynab,
+        "SaveSubTransaction",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(ynab, "TransactionClearedStatus", lambda value: value)
+    monkeypatch.setattr(ynab, "TransactionFlagColor", lambda value: value)
+    _install_sdk_fakes(
+        monkeypatch,
+        plans_api_cls=_FakeApi,
+        accounts_api_cls=_FakeApi,
+        transactions_api_cls=_TransactionsApi,
+    )
+    request = TransactionUpdateRequest(
+        transaction_id="t1",
+        amount_milliunits=-1000,
+        memo="updated",
+        flag_color="blue",
+        account_id="11111111-1111-1111-1111-111111111111",
+        date=date(2026, 1, 2),
+        payee_id="22222222-2222-2222-2222-222222222222",
+        payee_name="Transfer : Cash",
+        category_id="33333333-3333-3333-3333-333333333333",
+        cleared="reconciled",
+        approved=True,
+        subtransactions=(
+            RemoteSubTransaction(
+                amount_milliunits=-600,
+                payee_id="44444444-4444-4444-4444-444444444444",
+                payee_name="Food",
+                category_id="55555555-5555-5555-5555-555555555555",
+                memo="Dinner",
+            ),
+        ),
+    )
+    with YnabClient("secret") as client:
+        client.update_transaction("p1", request)
+    payload = captured["payload"].transaction
+    assert str(payload.account_id) == "11111111-1111-1111-1111-111111111111"
+    assert payload.date == date(2026, 1, 2)
+    assert str(payload.payee_id) == "22222222-2222-2222-2222-222222222222"
+    assert str(payload.category_id) == "33333333-3333-3333-3333-333333333333"
+    assert payload.cleared == "reconciled"
+    assert payload.approved is True
+    assert payload.flag_color == "blue"
+    assert len(payload.subtransactions) == 1
+    assert str(payload.subtransactions[0].payee_id) == "44444444-4444-4444-4444-444444444444"
+    assert payload.subtransactions[0].memo == "Dinner"
 
 
 def test_ynab_client_update_transaction_wraps_exception(monkeypatch: MonkeyPatch) -> None:
