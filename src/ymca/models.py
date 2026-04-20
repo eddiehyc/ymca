@@ -249,6 +249,10 @@ class PreparedTrackingUpdate:
     rebuild: bool
     create_sentinel: NewTransactionRequest | None
     update_sentinel: TransactionUpdateRequest | None
+    memo_flips: tuple[TransactionUpdateRequest, ...] = ()
+    """Pending ``[FX]`` \u2194 ``[FX+]`` marker rewrites (and legacy \u2192 current
+    migrations) for transactions whose counted state changed this run. Applied
+    before the sentinel upsert via a batched ``update_transactions`` call."""
 
 
 @dataclass(frozen=True, slots=True)

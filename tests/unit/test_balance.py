@@ -212,11 +212,14 @@ def test_build_tracking_update_adds_new_cleared_transaction() -> None:
     assert result.prior_balance_milliunits == 0
     assert result.new_balance_milliunits == 12340
     assert len(result.contributions) == 1
-    assert result.contributions[0].reason == "delta-cleared"
+    assert result.contributions[0].reason == "count-new"
     assert result.create_sentinel is not None
     assert result.create_sentinel.flag_color == SENTINEL_FLAG_COLOR
     assert result.update_sentinel is None
     assert result.within_tolerance is True
+    # Unmarked rows get their ``[FX+]`` marker from the FX conversion path
+    # (not from a tracking memo flip), so the tracking update emits no flips.
+    assert result.memo_flips == ()
 
 
 def test_sentinel_create_and_update_carry_the_green_flag() -> None:
@@ -292,9 +295,11 @@ def test_build_tracking_update_ignores_uncleared_new_transaction() -> None:
     assert result.contributions == ()
 
 
-def test_build_tracking_update_subtracts_cleared_then_deleted() -> None:
+def test_build_tracking_update_subtracts_counted_then_deleted() -> None:
+    """A previously-counted row (``[FX+]``) that is now deleted gets subtracted
+    and has its memo flipped back to ``[FX]`` to record the uncount."""
     plan = _plan()
-    memo = "Coffee | [FX] -12.34 HKD (rate: 7.8 HKD/USD)"
+    memo = "Coffee | [FX+] -12.34 HKD (rate: 7.8 HKD/USD)"
     txn = _txn(
         txn_id="t1",
         amount_milliunits=-1582,
@@ -315,20 +320,20 @@ def test_build_tracking_update_subtracts_cleared_then_deleted() -> None:
     )
 
     assert result.new_balance_milliunits == 12340  # -(-12340) added back
-    assert result.contributions[0].reason == "delta-cleared-deleted"
+    assert result.contributions[0].reason == "uncount"
+    assert len(result.memo_flips) == 1
+    assert "[FX]" in result.memo_flips[0].memo
+    assert "[FX+]" not in result.memo_flips[0].memo
 
 
-def test_delta_adds_marked_cleared_row_previously_uncounted() -> None:
-    """Regression: any cleared/reconciled row in the delta contributes, even
-    when it already carries an FX marker.
+def test_delta_adds_marked_uncounted_cleared_row_and_flips_to_counted() -> None:
+    """Regression: a cleared-state row whose marker is still ``[FX]`` (uncounted)
+    must contribute on the next delta and have its marker flipped to ``[FX+]``.
 
-    The user reported a +6.94 USD drift on ``amex_hk_explorer`` after a
-    rebuild because a single ``[FX]``-marked row re-appeared in the next
-    delta (its cleared status had changed post-rebuild). The old code
-    treated ``marked + cleared + not-deleted`` as a no-op, which dropped
-    the contribution and let the tracked balance and YNAB's cleared_balance
-    diverge. The spec §12.4 rule is simpler: every cleared row in the
-    delta updates the balance, period.
+    This covers the user-reported drift where an already-FX'd but uncounted
+    row's cleared status changed between runs. The dual-marker model handles
+    it by using the marker as the ledger: was_counted=False, should=True →
+    add + flip to counted.
     """
     plan = _plan()
     already_marked = _txn(
@@ -352,10 +357,152 @@ def test_delta_adds_marked_cleared_row_previously_uncounted() -> None:
 
     assert result.new_balance_milliunits == -12340
     assert len(result.contributions) == 1
-    assert result.contributions[0].reason == "delta-cleared"
+    assert result.contributions[0].reason == "count"
+    assert len(result.memo_flips) == 1
+    flip = result.memo_flips[0]
+    assert flip.transaction_id == "reclassified"
+    assert "[FX+]" in flip.memo
+    assert flip.amount_milliunits is None  # amount must not be touched
 
 
-def test_build_tracking_update_uncleared_transition_is_no_op_documented() -> None:
+def test_delta_cleared_to_reconciled_is_noop_on_counted_row() -> None:
+    """Regression for the double-count bug the dual-marker model fixes.
+
+    A row that is already ``[FX+]`` and stays cleared/reconciled must NOT
+    re-contribute when YNAB re-surfaces it (e.g. because the user moved it
+    from cleared → reconciled). Under the prior "every cleared delta row
+    contributes" rule this produced a silent double-count.
+    """
+    plan = _plan()
+    already_counted = _txn(
+        txn_id="pre-counted",
+        amount_milliunits=-1582,
+        memo="Lunch | [FX+] -12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="reconciled",
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[already_counted],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert result.new_balance_milliunits == 0
+    assert result.contributions == ()
+    assert result.memo_flips == ()
+
+
+def test_delta_counted_to_uncleared_subtracts_and_flips_back() -> None:
+    """``cleared → uncleared`` on a ``[FX+]`` row: subtract and flip to ``[FX]``.
+
+    The original spec listed this as a supported transition; the dual-marker
+    model delivers it without any local state.
+    """
+    plan = _plan()
+    counted_uncleared = _txn(
+        txn_id="reopen",
+        amount_milliunits=-1582,
+        memo="Lunch | [FX+] -12.34 HKD (rate: 7.8 HKD/USD)",
+        cleared="uncleared",
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[counted_uncleared],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert result.new_balance_milliunits == 12340
+    assert len(result.contributions) == 1
+    assert result.contributions[0].signed_source_milliunits == 12340
+    assert result.contributions[0].reason == "uncount"
+    assert len(result.memo_flips) == 1
+    flip = result.memo_flips[0]
+    assert "[FX]" in flip.memo
+    assert "[FX+]" not in flip.memo
+
+
+def test_delta_migrates_legacy_marker_to_counted_and_contributes() -> None:
+    """A legacy ``(FX rate: ...)`` marker on a cleared row gets migrated
+    straight to ``[FX+]`` form while the row's source amount is added to the
+    balance, so subsequent runs don't re-examine it."""
+    plan = _plan()
+    legacy_cleared = _txn(
+        txn_id="legacy-1",
+        amount_milliunits=10000,
+        memo="Coffee | 78 HKD (FX rate: 7.8)",
+        cleared="cleared",
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[legacy_cleared],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert result.new_balance_milliunits == 78000
+    assert len(result.memo_flips) == 1
+    flip = result.memo_flips[0]
+    assert "[FX+]" in flip.memo
+    assert "FX rate" not in flip.memo
+
+
+def test_delta_migrates_legacy_marker_to_uncounted_on_uncleared_row() -> None:
+    """Legacy + uncleared: migrate the marker to ``[FX]`` without contributing.
+
+    Ensures future runs don't keep re-visiting the row (was_counted=False,
+    should=False, but the memo is legacy, so we still emit a migration flip).
+    """
+    plan = _plan()
+    legacy_uncleared = _txn(
+        txn_id="legacy-u",
+        amount_milliunits=-7000,
+        memo="Notes | 54 HKD (FX rate: 7.8)",
+        cleared="uncleared",
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[legacy_uncleared],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert result.contributions == ()
+    assert result.new_balance_milliunits == 0
+    assert len(result.memo_flips) == 1
+    flip = result.memo_flips[0]
+    assert "[FX]" in flip.memo
+    assert "[FX+]" not in flip.memo
+    assert "FX rate" not in flip.memo
+
+
+def test_build_tracking_update_uncleared_uncounted_row_is_noop() -> None:
+    """An uncleared row whose marker is ``[FX]`` (uncounted) never touched the
+    balance before and doesn't this run either: was=False, should=False."""
     plan = _plan()
     memo = "Coffee | [FX] -12.34 HKD (rate: 7.8 HKD/USD)"
     txn = _txn(
@@ -376,9 +523,9 @@ def test_build_tracking_update_uncleared_transition_is_no_op_documented() -> Non
         prompt_for_transfer_direction=None,
     )
 
-    # E24: no-op; drift is expected and documented.
     assert result.new_balance_milliunits == 0
     assert result.contributions == ()
+    assert result.memo_flips == ()
 
 
 def test_build_tracking_update_carries_prior_balance_and_updates_sentinel() -> None:
@@ -527,7 +674,7 @@ def test_build_tracking_update_rebuild_sums_markers_from_scratch() -> None:
     # legacy 78.00 HKD = 78000 + current -12.34 = -12340 + unmarked 50.00 = 50000
     assert result.new_balance_milliunits == 78000 - 12340 + 50000
     reasons = {c.reason for c in result.contributions}
-    assert reasons == {"rebuild-marked", "rebuild-unmarked-cleared"}
+    assert reasons == {"rebuild-marked", "rebuild-unmarked"}
     # Sentinel gets overwritten (update_sentinel populated).
     assert result.update_sentinel is not None
 

@@ -394,11 +394,21 @@ def _apply_tracking_writes(
     plan_id: str,
     tracking: Sequence[PreparedTrackingUpdate],
 ) -> tuple[int, int, dict[str, str]]:
-    """Apply sentinel create/update calls and return captured ids by alias."""
+    """Apply sentinel create/update calls and per-row memo flips.
+
+    Returns ``(total_writes, sentinels_created, sentinel_ids_by_alias)``.
+    Memo flips for a tracked account are sent as a single batched
+    ``update_transactions`` call; the sentinel upsert uses the single-row
+    ``update_transaction`` / ``create_transaction`` endpoint so we can still
+    capture the new id on first enablement.
+    """
     total_writes = 0
     created = 0
     new_ids: dict[str, str] = {}
     for entry in tracking:
+        if entry.memo_flips:
+            gateway.update_transactions(plan_id, entry.memo_flips)
+            total_writes += len(entry.memo_flips)
         if entry.create_sentinel is not None:
             new_id = gateway.create_transaction(plan_id, entry.create_sentinel)
             new_ids[entry.account_alias] = new_id
@@ -494,12 +504,21 @@ def _prepare_update(
         divide_to_base=fx_rule.divide_to_base,
         rate=fx_rule.rate,
     )
+    # When this transaction is being FX-converted for the first time AND the
+    # account has local-currency tracking enabled AND the row is currently
+    # cleared/reconciled and not deleted, emit the ``[FX+]`` (counted) form so
+    # that the balance engine does not have to issue a separate memo flip on
+    # the same run. For non-tracked accounts or uncleared/deleted rows we stay
+    # with the historic ``[FX]`` form.
+    is_cleared = transaction.cleared in ("cleared", "reconciled")
+    counted = account.track_local_balance and is_cleared and not transaction.deleted
     marker = build_fx_marker(
         source_amount_milliunits=transaction.amount_milliunits,
         source_currency=account.currency,
         rate_text=fx_rule.rate_text,
         pair_label=pair_label,
         transfer_prefix=is_transfer,
+        counted=counted,
     )
     new_memo = append_fx_marker(transaction.memo, marker)
     request = TransactionUpdateRequest(

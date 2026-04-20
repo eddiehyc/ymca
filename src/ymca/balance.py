@@ -5,14 +5,20 @@ It computes per-account balance contributions for each run, detects the
 in-account sentinel transaction, and produces sentinel create/update requests
 plus a tolerance-check summary.
 
-Design follows ``docs/spec.md`` §12. Core behaviors:
+Design follows ``docs/spec.md`` §12. The classifier is driven by a dual-marker
+model: the FX memo carries either ``[FX]`` (converted but uncounted) or
+``[FX+]`` (converted and already added to the tracked balance). The engine
+compares ``was_counted`` (derived from the bracket) against
+``should_be_counted`` (derived from the current cleared/deleted YNAB state)
+and acts on the four-way truth table:
 
-* **Delta mode** (``rebuild=False``): the current balance is carried forward
-  from the sentinel's memo and adjusted only by new or newly-deleted cleared
-  rows in the delta.
-* **Rebuild mode** (``rebuild=True``): the balance is recomputed from scratch
-  by parsing the FX markers (legacy + current) on every active cleared or
-  reconciled transaction in the account.
+* ``was=False``, ``should=True``  → add, flip the marker to ``[FX+]``.
+* ``was=True``, ``should=False`` → subtract, flip the marker to ``[FX]``.
+* else → no-op.
+
+Rebuild mode (``rebuild=True``) ignores the prior counted flag and re-derives
+both the balance and the marker state from the current cleared/deleted
+status, then writes absolute results back through the sentinel + memo flips.
 
 The module does not make any network calls or write side effects by itself;
 callers pass in the fetched transactions and the remote account snapshot.
@@ -28,11 +34,14 @@ from .memo import (
     SENTINEL_FLAG_COLOR,
     SENTINEL_PAYEE_NAME,
     build_sentinel_memo,
+    flip_fx_marker_counted,
+    has_fx_counted_marker,
     has_fx_marker,
     has_legacy_fx_marker,
     is_sentinel_payee,
     memo_marker_has_transfer_prefix,
     parse_sentinel_memo,
+    replace_legacy_fx_marker,
     source_amount_milliunits_from_marker,
 )
 from .models import (
@@ -175,6 +184,7 @@ def build_tracking_update(
     prior_balance = prior_sentinel.balance_milliunits if prior_sentinel is not None else 0
 
     contributions: list[BalanceContribution] = []
+    memo_flips: list[TransactionUpdateRequest] = []
     ambiguous: list[AmbiguousTransfer] = []
     sentinel_id = prior_sentinel_txn.id if prior_sentinel_txn is not None else None
 
@@ -185,15 +195,18 @@ def build_tracking_update(
             continue
         if transaction.id in split_skipped_ids:
             continue
-        contribution = _classify_transaction(
+        contribution, memo_flip = _classify_transaction(
             transaction=transaction,
             account=account,
+            pair_label=pair_label,
             rebuild=rebuild,
             prompt=prompt_for_transfer_direction,
             ambiguous_out=ambiguous,
         )
         if contribution is not None:
             contributions.append(contribution)
+        if memo_flip is not None:
+            memo_flips.append(memo_flip)
 
     if rebuild:
         new_balance = sum(c.signed_source_milliunits for c in contributions)
@@ -260,6 +273,7 @@ def build_tracking_update(
         rebuild=rebuild,
         create_sentinel=create_request,
         update_sentinel=update_request,
+        memo_flips=tuple(memo_flips),
     )
 
 
@@ -267,78 +281,251 @@ def _classify_transaction(
     *,
     transaction: RemoteTransaction,
     account: AccountConfig,
+    pair_label: str,
     rebuild: bool,
     prompt: TransferDirectionPrompt | None,
     ambiguous_out: list[AmbiguousTransfer],
-) -> BalanceContribution | None:
-    """Return a signed contribution for ``transaction`` (or ``None``)."""
-    has_marker = has_fx_marker(transaction.memo) or has_legacy_fx_marker(transaction.memo)
+) -> tuple[BalanceContribution | None, TransactionUpdateRequest | None]:
+    """Classify one transaction using the dual-marker rule (spec §12).
+
+    Returns a ``(contribution, memo_flip)`` pair. Either side can be ``None``:
+
+    * ``contribution is None`` means the row does not move the tracked
+      balance this run.
+    * ``memo_flip is None`` means the FX marker on the row already matches
+      its current counted state (or there is no marker to flip -- the FX
+      conversion path writes a fresh ``[FX]``/``[FX+]`` marker in that case).
+
+    In ``rebuild`` mode the prior counted flag is ignored: the balance is
+    re-derived from scratch from the current cleared/deleted status, and any
+    marker whose bracket does not match that status is flipped in place.
+    """
+    is_current = has_fx_marker(transaction.memo)
+    is_legacy = (not is_current) and has_legacy_fx_marker(transaction.memo)
+    was_counted = has_fx_counted_marker(transaction.memo)
     is_cleared = transaction.cleared in ("cleared", "reconciled")
+    should_be_counted = is_cleared and not transaction.deleted
 
     if rebuild:
-        if has_marker:
-            if not is_cleared or transaction.deleted:
-                return None
-            amount = _resolve_marked_source_milliunits(
-                transaction=transaction,
-                account=account,
-                prompt=prompt,
-                ambiguous_out=ambiguous_out,
-            )
-            if amount is None:
-                return None
-            return BalanceContribution(
-                transaction_id=transaction.id,
-                signed_source_milliunits=amount,
-                reason="rebuild-marked",
-            )
-        # Unmarked in rebuild mode: if it is currently cleared/reconciled and
-        # not deleted, we are about to FX-convert it and should count it.
-        if not is_cleared or transaction.deleted:
-            return None
-        return BalanceContribution(
-            transaction_id=transaction.id,
-            signed_source_milliunits=transaction.amount_milliunits,
-            reason="rebuild-unmarked-cleared",
-        )
-
-    # Delta mode: every cleared/reconciled row in the delta contributes, regardless
-    # of whether it already carries an FX marker. The balance engine does not do
-    # per-transaction delta tracking; the assumption is that YNAB only re-surfaces
-    # a row when it changed, and a change that leaves (or keeps) the row in a
-    # cleared state is accounted for by adding (or subtracting, if newly deleted)
-    # the source-currency amount. Modifying an already-counted cleared row is an
-    # explicit documented limitation (§12.7, E25) recoverable via
-    # ``ymca sync --rebuild-balance``.
-    if not is_cleared:
-        return None
-
-    if has_marker:
-        amount = _resolve_marked_source_milliunits(
+        return _classify_rebuild(
             transaction=transaction,
             account=account,
+            pair_label=pair_label,
+            is_current=is_current,
+            is_legacy=is_legacy,
+            was_counted=was_counted,
+            should_be_counted=should_be_counted,
             prompt=prompt,
             ambiguous_out=ambiguous_out,
         )
-    else:
-        # Unmarked rows are pre-FX, so ``amount_milliunits`` is still in the
-        # account's source currency.
-        amount = transaction.amount_milliunits
-
-    if amount is None:
-        return None
-
-    if transaction.deleted:
-        return BalanceContribution(
-            transaction_id=transaction.id,
-            signed_source_milliunits=-amount,
-            reason="delta-cleared-deleted",
-        )
-    return BalanceContribution(
-        transaction_id=transaction.id,
-        signed_source_milliunits=amount,
-        reason="delta-cleared",
+    return _classify_delta(
+        transaction=transaction,
+        account=account,
+        pair_label=pair_label,
+        is_current=is_current,
+        is_legacy=is_legacy,
+        was_counted=was_counted,
+        should_be_counted=should_be_counted,
+        prompt=prompt,
+        ambiguous_out=ambiguous_out,
     )
+
+
+def _classify_delta(
+    *,
+    transaction: RemoteTransaction,
+    account: AccountConfig,
+    pair_label: str,
+    is_current: bool,
+    is_legacy: bool,
+    was_counted: bool,
+    should_be_counted: bool,
+    prompt: TransferDirectionPrompt | None,
+    ambiguous_out: list[AmbiguousTransfer],
+) -> tuple[BalanceContribution | None, TransactionUpdateRequest | None]:
+    """Delta-mode classifier built around the was_counted x should_be_counted 2x2.
+
+    * ``was=False, should=True``  → add source amount, flip marker to ``[FX+]``
+      (migrate legacy → ``[FX+]`` if needed).
+    * ``was=True,  should=False`` → subtract source amount, flip marker to
+      ``[FX]``.
+    * ``was=True,  should=True``  → no-op (prevents the double-count that
+      tripped the ``cleared → reconciled`` edge case).
+    * ``was=False, should=False`` → no-op (row never contributed and still
+      shouldn't). Legacy markers stuck in this cell get migrated to ``[FX]``
+      so future runs don't re-consider them.
+    """
+    if not is_current and not is_legacy:
+        # Unmarked: the FX conversion path writes a fresh [FX+]/[FX] marker
+        # this run (see ``_prepare_update``), so we do not emit a separate
+        # memo flip here. Contribute only when the row is cleared+not-deleted;
+        # otherwise the FX path writes [FX] with no balance effect.
+        if should_be_counted:
+            return (
+                BalanceContribution(
+                    transaction_id=transaction.id,
+                    signed_source_milliunits=transaction.amount_milliunits,
+                    reason="count-new",
+                ),
+                None,
+            )
+        return None, None
+
+    if is_current and was_counted == should_be_counted:
+        # No change to counted state and the memo is already in current form.
+        return None, None
+
+    amount = _resolve_marked_source_milliunits(
+        transaction=transaction,
+        account=account,
+        prompt=prompt,
+        ambiguous_out=ambiguous_out,
+    )
+    if amount is None:
+        return None, None
+
+    new_memo = _rewrite_marker(
+        memo=transaction.memo,
+        is_current=is_current,
+        is_legacy=is_legacy,
+        counted=should_be_counted,
+        source_currency=account.currency,
+        pair_label=pair_label,
+        is_transfer=transaction.transfer_transaction_id is not None,
+    )
+    memo_flip: TransactionUpdateRequest | None = None
+    if new_memo is not None and new_memo != transaction.memo:
+        memo_flip = TransactionUpdateRequest(
+            transaction_id=transaction.id,
+            amount_milliunits=None,
+            memo=new_memo,
+        )
+
+    if should_be_counted and not was_counted:
+        return (
+            BalanceContribution(
+                transaction_id=transaction.id,
+                signed_source_milliunits=amount,
+                reason="count",
+            ),
+            memo_flip,
+        )
+    if was_counted and not should_be_counted:
+        return (
+            BalanceContribution(
+                transaction_id=transaction.id,
+                signed_source_milliunits=-amount,
+                reason="uncount",
+            ),
+            memo_flip,
+        )
+
+    # was=False, should=False on a legacy row: migrate the memo without
+    # touching the balance so the row doesn't need re-examination next run.
+    return None, memo_flip
+
+
+def _classify_rebuild(
+    *,
+    transaction: RemoteTransaction,
+    account: AccountConfig,
+    pair_label: str,
+    is_current: bool,
+    is_legacy: bool,
+    was_counted: bool,
+    should_be_counted: bool,
+    prompt: TransferDirectionPrompt | None,
+    ambiguous_out: list[AmbiguousTransfer],
+) -> tuple[BalanceContribution | None, TransactionUpdateRequest | None]:
+    """Rebuild classifier: derive both balance and marker from current state.
+
+    The running balance starts at zero in ``build_tracking_update``, so this
+    branch only emits **positive** contributions for rows that currently
+    should be counted. Marker state is normalized regardless of whether it
+    moves the balance, so legacy markers get migrated and stale ``[FX+]``
+    brackets on uncleared rows get flipped back to ``[FX]``.
+    """
+    # Marker flip (independent of the balance direction).
+    new_memo = None
+    if is_current and was_counted != should_be_counted:
+        new_memo = flip_fx_marker_counted(
+            transaction.memo or "", counted=should_be_counted
+        )
+    elif is_legacy:
+        new_memo = replace_legacy_fx_marker(
+            transaction.memo or "",
+            pair_label_for_currency={account.currency: pair_label},
+            transfer=transaction.transfer_transaction_id is not None,
+            counted=should_be_counted,
+        )
+
+    memo_flip: TransactionUpdateRequest | None = None
+    if new_memo is not None and new_memo != (transaction.memo or ""):
+        memo_flip = TransactionUpdateRequest(
+            transaction_id=transaction.id,
+            amount_milliunits=None,
+            memo=new_memo,
+        )
+
+    if not should_be_counted:
+        return None, memo_flip
+
+    # Count the row. For unmarked rows the FX path will write the memo; for
+    # marked rows we rely on the parsed source amount.
+    if not is_current and not is_legacy:
+        return (
+            BalanceContribution(
+                transaction_id=transaction.id,
+                signed_source_milliunits=transaction.amount_milliunits,
+                reason="rebuild-unmarked",
+            ),
+            None,
+        )
+
+    amount = _resolve_marked_source_milliunits(
+        transaction=transaction,
+        account=account,
+        prompt=prompt,
+        ambiguous_out=ambiguous_out,
+    )
+    if amount is None:
+        return None, memo_flip
+    return (
+        BalanceContribution(
+            transaction_id=transaction.id,
+            signed_source_milliunits=amount,
+            reason="rebuild-marked",
+        ),
+        memo_flip,
+    )
+
+
+def _rewrite_marker(
+    *,
+    memo: str | None,
+    is_current: bool,
+    is_legacy: bool,
+    counted: bool,
+    source_currency: str,
+    pair_label: str,
+    is_transfer: bool,
+) -> str | None:
+    """Produce the memo with the FX marker flipped to the requested counted
+    state. Handles both the current ``[FX]``/``[FX+]`` form and legacy
+    ``(FX rate: ...)`` migration. Returns ``None`` when there is nothing to
+    rewrite.
+    """
+    source_memo = memo or ""
+    if is_current:
+        return flip_fx_marker_counted(source_memo, counted=counted)
+    if is_legacy:
+        return replace_legacy_fx_marker(
+            source_memo,
+            pair_label_for_currency={source_currency: pair_label},
+            transfer=is_transfer,
+            counted=counted,
+        )
+    return None
 
 
 def _resolve_marked_source_milliunits(

@@ -17,11 +17,15 @@ _NORMALIZE_AMOUNT_RE = re.compile(
 )
 
 FX_MARKER_RE = re.compile(
-    r"\[FX\]\s+"
+    r"\[FX(?P<counted>\+)?\]\s+"
     rf"(?P<amount>{_AMOUNT_PATTERN})\s+"
     r"(?P<currency>[A-Z]{3})\s+"
     r"\(rate:\s*(?P<rate>[0-9]+(?:\.[0-9]+)?)\s+(?P<pair>[A-Z]{3}/[A-Z]{3})\)"
 )
+"""Matches either the ``[FX]`` (uncounted) or ``[FX+]`` (counted) current-form
+FX marker. The ``counted`` capture group is ``"+"`` for ``[FX+]`` and ``None``
+for ``[FX]``; see §12 of ``docs/spec.md`` for the semantics.
+"""
 LEGACY_FX_MARKER_RE = re.compile(
     rf"(?P<amount>{_AMOUNT_PATTERN})\s+"
     r"(?P<currency>[A-Z]{3})\s+"
@@ -58,6 +62,18 @@ def has_fx_marker(memo: str | None) -> bool:
     return FX_MARKER_RE.search(memo) is not None
 
 
+def has_fx_counted_marker(memo: str | None) -> bool:
+    """Return True when ``memo`` contains the ``[FX+]`` (counted) bracket form.
+
+    Returns False for ``[FX]``, for legacy ``(FX rate: ...)`` markers, and for
+    any memo without an FX marker at all.
+    """
+    if memo is None:
+        return False
+    match = FX_MARKER_RE.search(memo)
+    return match is not None and match.group("counted") == "+"
+
+
 def has_legacy_fx_marker(memo: str | None) -> bool:
     if memo is None:
         return False
@@ -71,12 +87,42 @@ def build_fx_marker(
     rate_text: str,
     pair_label: str,
     transfer_prefix: bool = False,
+    counted: bool = False,
 ) -> str:
+    """Build the current-form FX marker.
+
+    ``counted=True`` emits the ``[FX+]`` variant, which means "this transaction
+    has been added to the tracked local-currency balance". ``counted=False``
+    (the default) emits the plain ``[FX]`` variant for converted-but-not-
+    counted rows (uncleared transactions, or accounts that don't have
+    ``track_local_balance`` enabled).
+    """
     source_amount = format_memo_milliunits(
         source_amount_milliunits,
         transfer_prefix=transfer_prefix,
     )
-    return f"[FX] {source_amount} {source_currency} (rate: {rate_text} {pair_label})"
+    bracket = "[FX+]" if counted else "[FX]"
+    return f"{bracket} {source_amount} {source_currency} (rate: {rate_text} {pair_label})"
+
+
+def flip_fx_marker_counted(memo: str, *, counted: bool) -> str | None:
+    """Flip the ``[FX]`` / ``[FX+]`` bracket in ``memo`` without touching the
+    amount, currency, rate, or pair label.
+
+    Returns the rewritten memo when the marker is already in current form and
+    needed a flip. Returns the original memo unchanged when the bracket is
+    already in the requested state. Returns ``None`` when ``memo`` does not
+    contain a current-form marker (caller can then try legacy migration).
+    """
+    match = FX_MARKER_RE.search(memo)
+    if match is None:
+        return None
+    current_bracket = "[FX+]" if match.group("counted") == "+" else "[FX]"
+    new_bracket = "[FX+]" if counted else "[FX]"
+    if current_bracket == new_bracket:
+        return memo
+    start = match.start()
+    return memo[:start] + new_bracket + memo[start + len(current_bracket) :]
 
 
 def append_fx_marker(original_memo: str | None, marker: str) -> str:
@@ -90,7 +136,15 @@ def replace_legacy_fx_marker(
     *,
     pair_label_for_currency: dict[str, str],
     transfer: bool,
+    counted: bool = False,
 ) -> str | None:
+    """Rewrite a legacy ``(FX rate: ...)`` marker into the current form.
+
+    ``counted=True`` emits ``[FX+]`` (the row is currently part of the tracked
+    balance); ``counted=False`` (default) preserves the historic behaviour of
+    emitting ``[FX]``. The ``transfer`` argument is kept for API stability but
+    is no longer consulted (the amount text already encodes any ``+/-`` sign).
+    """
     del transfer
 
     match = LEGACY_FX_MARKER_RE.search(memo)
@@ -107,6 +161,7 @@ def replace_legacy_fx_marker(
         source_currency=currency,
         rate_text=match.group("rate"),
         pair_label=pair_label,
+        counted=counted,
     )
     before = _trim_legacy_separator_suffix(memo[: match.start()])
     after = _trim_legacy_separator_prefix(memo[match.end() :])
@@ -124,9 +179,11 @@ def build_fx_marker_from_amount_text(
     source_currency: str,
     rate_text: str,
     pair_label: str,
+    counted: bool = False,
 ) -> str:
     normalized_amount = _normalize_amount_text(amount_text)
-    return f"[FX] {normalized_amount} {source_currency} (rate: {rate_text} {pair_label})"
+    bracket = "[FX+]" if counted else "[FX]"
+    return f"{bracket} {normalized_amount} {source_currency} (rate: {rate_text} {pair_label})"
 
 
 def amount_text_to_milliunits(

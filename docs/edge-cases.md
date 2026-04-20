@@ -162,34 +162,52 @@ A transfer transaction whose YNAB amount is `0` carries a `+/-` literal prefix i
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py), [`tests/unit/test_cli.py`](../tests/unit/test_cli.py).
 - Integration: not covered by the live suite (interactive prompt); asserted via unit tests.
 
-### E23. Cleared/reconciled → deleted reverses balance; uncleared → deleted does nothing
+### E23. Balance transitions under the dual-marker rule
 
-Delta-mode balance transitions:
+The delta classifier compares the counted bit in the FX marker (`[FX+]` vs. `[FX]`) against the current cleared/deleted state, and acts on the 2×2:
 
-- A cleared/reconciled transaction that is now deleted causes the balance engine to subtract its source-currency amount (parsed from the memo for marked rows, taken from `amount_milliunits` for unmarked pre-FX rows).
-- A transaction that is `uncleared` in the delta is a no-op for the balance regardless of the `deleted` flag (uncleared rows are never counted).
+| `was_counted` | `should_be_counted` | Balance | Memo flip |
+|---------------|---------------------|---------|-----------|
+| False | False | — | migrate legacy → `[FX]` on first touch |
+| False | True  | add | flip to `[FX+]` |
+| True  | False | subtract | flip to `[FX]` |
+| True  | True  | — | — |
 
-- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
-- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — deletes a cleared seed row and asserts the sentinel subtracts.
+All user-visible status transitions reduce to one cell:
 
-### E24. `cleared → uncleared` without deletion — unsupported drift
+- `uncleared → cleared/reconciled` on a `[FX]` row → add, flip to `[FX+]`.
+- `cleared → reconciled` on `[FX+]` → no-op (the fix for the former double-count bug).
+- `cleared → uncleared` on `[FX+]` → subtract, flip to `[FX]`.
+- `cleared → deleted` on `[FX+]` → subtract, flip to `[FX]`.
+- `uncleared → deleted` on `[FX]` → no-op.
+- `cleared → uncleared → cleared` (flip-flop): subtract then add ⇒ net zero.
 
-The delta-mode rule in §12.4 applies the contribution only when the row is `cleared`/`reconciled`. An un-cleared row in the delta is skipped, so the prior add cannot be reversed. The tracked balance keeps the add while YNAB's `cleared_balance` drops by the amount; the tolerance check surfaces the drift on the next run.
+Coverage:
 
-- Recovery: `ymca sync --rebuild-balance`.
-- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_build_tracking_update_uncleared_transition_is_no_op_documented`.
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — one test per cell of the matrix plus dedicated regressions (`test_delta_cleared_to_reconciled_is_noop_on_counted_row`, `test_delta_counted_to_uncleared_subtracts_and_flips_back`, `test_delta_migrates_legacy_marker_to_counted_and_contributes`, `test_build_tracking_update_subtracts_counted_then_deleted`).
+- Integration: [`tests/integration/test_local_currency_tracking.py`](../tests/integration/test_local_currency_tracking.py) — the full-lifecycle test drives cleared → deleted and asserts the sentinel memo reflects the subtracted balance.
 
-### E25. Modifying an already-counted cleared/reconciled transaction — unsupported drift
+### E24. Legacy `(FX rate: ...)` markers on tracked accounts
 
-Because the balance engine does not remember which rows it has already counted, any subsequent appearance of a cleared row in the delta contributes again. Common triggers:
+Legacy markers are treated as `was_counted=False`. On their first appearance in a tracked account's delta:
 
-- Editing a cleared row's amount or memo (YNAB re-surfaces the row → we add a second time, creating a drift equal to the source amount).
-- Re-clearing an un-cleared row that was previously cleared and counted (`cleared → uncleared → cleared`): the first clear is counted, the un-clear is skipped (E24), and the second clear double-counts.
+- Currently cleared + not deleted → add source amount, migrate memo to `[FX+]`.
+- Currently uncleared or deleted → no balance change, migrate memo to `[FX]` so the row doesn't need re-examination on subsequent runs.
 
-This is the price the engine pays for being stateless with respect to transactions. Users recover via `ymca sync --rebuild-balance`, which re-derives the balance from the current set of cleared FX-marked rows.
+Coverage:
 
-- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_delta_adds_marked_cleared_row_previously_uncounted` reproduces the regression where a cleared marked row was being dropped from the delta contribution, and verifies the contribution is now applied.
-- Integration: not a supported workflow (users recover via rebuild).
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_delta_migrates_legacy_marker_to_counted_and_contributes`, `test_delta_migrates_legacy_marker_to_uncounted_on_uncleared_row`.
+
+### E25. Editing a cleared/reconciled transaction that YMCA has already FX-converted — unsupported
+
+The marker records the source-currency amount at FX-conversion time. Any subsequent edit to the YNAB amount (alone, with the memo wiped, or alongside a hand-edited memo) cannot be reconciled automatically — see `docs/spec.md` §12.8 for the breakdown of the three sub-scenarios.
+
+**Recommended workflow**: delete the row in YNAB and enter a replacement. The delete path (`[FX+]` + cleared + deleted) subtracts the old contribution and flips the memo back to `[FX]`; the new entry adds with a fresh `[FX+]` marker. Net effect: `−old + new` with no drift and no manual state juggling.
+
+**Recovery from drift caused by prior hand-edits**: `ymca sync --rebuild-balance --apply`. Rebuild re-derives the balance from all active cleared FX-marked rows and re-normalizes every marker bracket to match its current cleared/deleted state.
+
+- Unit: (intentionally not exercised — the bad states are user-created; the model simply has no safe action to take).
+- Integration: (not a supported workflow).
 
 ### E26. First-time tracking enablement — bootstrap sentinel from history
 

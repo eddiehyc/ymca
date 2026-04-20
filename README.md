@@ -250,21 +250,31 @@ Open the sentinel in the YNAB register and the memo shows the current source-cur
 
 Per-run behavior (delta mode, i.e. every normal `ymca sync`):
 
-The rule is intentionally simple: **every cleared/reconciled row returned in the delta updates the tracked balance.**
+The FX marker carries a **counted bit** that doubles as a per-transaction ledger, so no local per-transaction database is needed:
 
-| Transaction state in delta | Tracking action |
-|----------------------------|-----------------|
-| Sentinel (our own row) | Skip. |
-| Split (subtransactions) | Skip. |
-| `cleared` or `reconciled`, not deleted (marked or unmarked) | **Add** the source-currency amount. For still-unmarked rows the YNAB amount is pre-FX source currency; for marked rows the amount is parsed from the memo, with the YNAB-side sign winning over any stale memo sign. |
-| `cleared` or `reconciled`, deleted | **Subtract** the same source-currency amount. |
-| `uncleared` (anything) | Skip. |
+- `[FX]`  — converted but NOT counted toward the tracked balance (uncleared rows, or rows in accounts without tracking).
+- `[FX+]` — converted AND counted.
 
-Known limitation (recover with `--rebuild-balance`):
+On every delta run the engine checks `was_counted` (derived from the bracket) against `should_be_counted` (derived from the current cleared/deleted state) and acts on the 2×2:
 
-- **Modifying an already-counted cleared or reconciled transaction** after YMCA has seen it (editing its amount/memo, un-clearing it, then clearing it again, or clearing it without then un-clearing back) will drift the tracked balance. YMCA deliberately does not keep a per-transaction ledger on disk, so it cannot tell "this cleared row is new" apart from "this cleared row changed". Every re-appearance of a cleared row in the delta is treated as a contribution.
+| `was_counted` | `should_be_counted` | Action |
+|---------------|---------------------|--------|
+| False | False | No-op. |
+| False | True  | **Add** source amount, flip marker to `[FX+]`. |
+| True  | False | **Subtract** source amount, flip marker to `[FX]`. |
+| True  | True  | No-op (prevents the `cleared → reconciled` double-count). |
 
-The tolerance check at the end of each run prints a warning when the tracked balance drifts beyond `0.01` of the stronger currency versus YNAB's `cleared_balance`, and suggests `ymca sync --rebuild-balance`.
+In practice this handles every ordinary YNAB operation on a tracked row: `uncleared → cleared/reconciled`, `cleared → reconciled`, `cleared → uncleared`, `cleared → deleted`, even flip-flops like `cleared → uncleared → cleared` (net zero). Legacy `(FX rate: ...)` memos get migrated to the new form on first touch.
+
+Known limitation — editing a cleared, already-FX-converted row is **not** supported. The memo still holds the original source amount, so YMCA can't tell the amount changed. Three sub-scenarios all drift:
+
+1. Amount-only edit → no-op, drift equal to the amount delta.
+2. Amount edit + memo wipe → double-counts AND silently rewrites the YNAB amount on the next sync.
+3. Amount edit + selective memo edit → double-counts or drifts depending on which edit you make.
+
+**Always delete-and-re-enter** when a cleared transaction needs to change. The delete path subtracts the old contribution; the fresh entry adds the new one. Net effect: `−old + new` with no drift.
+
+The tolerance check at the end of each run warns when the tracked balance drifts beyond `0.01` of the stronger currency versus YNAB's `cleared_balance`. Recovery is `ymca sync --rebuild-balance`.
 
 Rebuild mode (`ymca sync --rebuild-balance`):
 
