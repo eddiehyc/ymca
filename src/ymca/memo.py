@@ -50,11 +50,18 @@ hint if a user accidentally clears it by hand.
 
 _SENTINEL_ISO_PATTERN = r"[0-9T:\-Z.+]+"
 _SENTINEL_PATTERN = (
+    r"^(?P<amount>" + _AMOUNT_PATTERN + r")\s+"
+    r"(?P<currency>[A-Z]{3})\s+"
+    r"\[YMCA-BAL\]$"
+)
+SENTINEL_MEMO_RE = re.compile(_SENTINEL_PATTERN)
+
+_LEGACY_COMPACT_SENTINEL_PATTERN = (
     r"^\[YMCA-BAL\]\s+"
     r"(?P<currency>[A-Z]{3})\s+"
     r"(?P<amount>" + _AMOUNT_PATTERN + r")$"
 )
-SENTINEL_MEMO_RE = re.compile(_SENTINEL_PATTERN)
+LEGACY_COMPACT_SENTINEL_MEMO_RE = re.compile(_LEGACY_COMPACT_SENTINEL_PATTERN)
 
 _LEGACY_SENTINEL_PATTERN = (
     r"^\[YMCA-BAL\]\s+"
@@ -366,7 +373,7 @@ def build_sentinel_memo(
     del drift_milliunits_stronger, stronger_currency
 
     amount_text = format_balance_milliunits(balance_milliunits)
-    return f"[YMCA-BAL] {currency} {amount_text}"
+    return f"{amount_text} {currency} [YMCA-BAL]"
 
 
 def parse_sentinel_memo(memo: str | None) -> dict[str, object] | None:
@@ -378,6 +385,8 @@ def parse_sentinel_memo(memo: str | None) -> dict[str, object] | None:
         return None
     stripped = memo.strip()
     match = SENTINEL_MEMO_RE.match(stripped)
+    if match is None:
+        match = LEGACY_COMPACT_SENTINEL_MEMO_RE.match(stripped)
     if match is not None:
         return {
             "currency": match.group("currency"),

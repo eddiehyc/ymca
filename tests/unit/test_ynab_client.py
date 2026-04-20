@@ -872,7 +872,7 @@ def test_ynab_client_create_transaction_forwards_flag_color_when_set(
         account_id="00000000-0000-0000-0000-000000000001",
         date=date(2026, 4, 19),
         amount_milliunits=0,
-        memo="[YMCA-BAL] HKD 0.00 | ...",
+        memo="0.00 HKD [YMCA-BAL] | ...",
         payee_name="[YMCA] Tracked Balance",
         cleared="reconciled",
         flag_color="green",

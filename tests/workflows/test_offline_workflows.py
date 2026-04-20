@@ -239,7 +239,7 @@ def test_tracking_uncleared_then_cleared_updates_sentinel(
     sentinel_first = gateway.find_active_transaction_by_payee(
         SENTINEL_PAYEE_NAME, account_id="acct-hkd"
     )
-    assert "[YMCA-BAL] HKD 0.00" in (sentinel_first.memo or "")
+    assert "0.00 HKD [YMCA-BAL]" in (sentinel_first.memo or "")
 
     gateway.set_cleared("txn-uc", "cleared")
     second_exit = main(["sync", "--apply"])
@@ -251,7 +251,7 @@ def test_tracking_uncleared_then_cleared_updates_sentinel(
     sentinel_second = gateway.find_active_transaction_by_payee(
         SENTINEL_PAYEE_NAME, account_id="acct-hkd"
     )
-    assert "[YMCA-BAL] HKD -12.34" in (sentinel_second.memo or "")
+    assert "-12.34 HKD [YMCA-BAL]" in (sentinel_second.memo or "")
 
 
 def test_local_currency_tracking_lifecycle_workflow(
@@ -295,7 +295,7 @@ def test_local_currency_tracking_lifecycle_workflow(
     sentinel = gateway.find_active_transaction_by_payee(
         SENTINEL_PAYEE_NAME, account_id="acct-hkd"
     )
-    assert "[YMCA-BAL] HKD -12.34" in (sentinel.memo or "")
+    assert "-12.34 HKD [YMCA-BAL]" in (sentinel.memo or "")
 
     saved_state = load_state(state_path)
     sentinel_id = saved_state.plans["personal"].sentinel_ids["travel_hkd"]
@@ -307,14 +307,14 @@ def test_local_currency_tracking_lifecycle_workflow(
     assert second_exit == 0
     assert "Sentinel writes: 1" in second_output.out
     updated_sentinel = gateway.detail(sentinel_id)
-    assert "[YMCA-BAL] HKD 0.00" in (updated_sentinel.memo or "")
+    assert "0.00 HKD [YMCA-BAL]" in (updated_sentinel.memo or "")
 
     gateway.update_transaction(
         "plan-1",
         TransactionUpdateRequest(
             transaction_id=sentinel_id,
             amount_milliunits=None,
-            memo="[YMCA-BAL] HKD 9,999.99",
+            memo="9,999.99 HKD [YMCA-BAL]",
             flag_color=None,
         ),
     )
@@ -324,7 +324,7 @@ def test_local_currency_tracking_lifecycle_workflow(
     assert rebuild_exit == 0
     assert "Balance mode: REBUILD (full scan)" in rebuild_output.out
     rebuilt_sentinel = gateway.detail(sentinel_id)
-    assert "[YMCA-BAL] HKD 0.00" in (rebuilt_sentinel.memo or "")
+    assert "0.00 HKD [YMCA-BAL]" in (rebuilt_sentinel.memo or "")
 
     writes_before_quiet_run = len(gateway.updates)
     quiet_exit = main(["sync", "--apply"])
@@ -424,14 +424,14 @@ fx_rates:
     assert "Sentinel writes:" in second_output.out
     assert gateway.detail("txn-out").memo == "Move | [FX+] +/-12.34 HKD (rate: 7.8 HKD/USD)"
     assert gateway.detail("txn-in").memo == "Move | [FX+] +/-12.34 HKD (rate: 7.8 HKD/USD)"
-    assert "[YMCA-BAL] HKD -12.34" in (
+    assert "-12.34 HKD [YMCA-BAL]" in (
         gateway.find_active_transaction_by_payee(
             SENTINEL_PAYEE_NAME,
             account_id="acct-out",
         ).memo
         or ""
     )
-    assert "[YMCA-BAL] HKD 12.34" in (
+    assert "12.34 HKD [YMCA-BAL]" in (
         gateway.find_active_transaction_by_payee(
             SENTINEL_PAYEE_NAME,
             account_id="acct-in",
@@ -447,14 +447,14 @@ fx_rates:
     assert third_exit == 0
     assert gateway.detail("txn-out").memo == "Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
     assert gateway.detail("txn-in").memo == "Move | [FX→] +/-12.34 HKD (rate: 7.8 HKD/USD)"
-    assert "[YMCA-BAL] HKD -12.34" in (
+    assert "-12.34 HKD [YMCA-BAL]" in (
         gateway.find_active_transaction_by_payee(
             SENTINEL_PAYEE_NAME,
             account_id="acct-out",
         ).memo
         or ""
     )
-    assert "[YMCA-BAL] HKD 0.00" in (
+    assert "0.00 HKD [YMCA-BAL]" in (
         gateway.find_active_transaction_by_payee(
             SENTINEL_PAYEE_NAME,
             account_id="acct-in",

@@ -275,9 +275,9 @@ Legacy memo text may look like:
 
 The main CLI does not migrate this format. It skips those transactions so current conversion logic stays simple and idempotent.
 
-## 10. Deprecated One-Off Helpers
+## 10. Deprecated Standalone Scripts
 
-Deprecated helpers are retained only for manual migration, repair, and debugging work.
+Deprecated scripts are retained only for manual migration, repair, and debugging work.
 
 Preferred path:
 
@@ -287,8 +287,10 @@ Preferred path:
 
 Compatibility note:
 
-- these helpers are not part of the supported `ymca` CLI surface
-- their logic should remain confined to the deprecated helper area rather than complicating the main CLI
+- these scripts are not part of the supported `ymca` CLI surface
+- they are standalone direct-invocation tools, not installed CLI commands
+- they are no longer maintained alongside the main runtime
+- any deprecated-only helper logic should stay under `deprecated/one_off_scripts/` rather than adding compatibility code to `src/ymca`
 
 ### 10.1 Legacy Memo Migration
 
@@ -344,7 +346,7 @@ Canonical local check flow:
 ```bash
 uv sync --dev
 uv run ruff check .
-uv run mypy src tests deprecated
+uv run mypy src tests
 uv run pytest
 ```
 
@@ -379,16 +381,16 @@ accounts:
 - **Memo** (single-line):
 
 ```text
-[YMCA-BAL] <CCY> <amount>
+<amount> <CCY> [YMCA-BAL]
 ```
 
 Example:
 
 ```text
-[YMCA-BAL] HKD 1,234.56
+1,234.56 HKD [YMCA-BAL]
 ```
 
-The amount is rounded to two decimal places, with thousands separators, matching the existing `[FX]` memo style. Older verbose sentinel memos remain readable and are normalized to the simplified form on the next write.
+The amount is rounded to two decimal places, with thousands separators, matching the existing `[FX]` memo style. Older compact (`[YMCA-BAL] HKD 1,234.56`) and verbose sentinel memos remain readable and are normalized to the simplified form on the next write.
 
 The sentinel transaction itself is always excluded from FX conversion and from the running-balance computation (detected by exact payee-name match).
 

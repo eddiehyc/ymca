@@ -17,7 +17,7 @@ It is designed for a local, privacy-friendly workflow:
 - Appends a deterministic FX memo marker like `[FX] -123.45 HKD (rate: 7.8 HKD/USD)` (the `rate:` value is rounded to three decimal places for the memo; conversion still uses your full configured rate).
 - Dry-runs by default and only writes when you pass `--apply`.
 - Stores YNAB `server_knowledge` locally after successful apply runs.
-- Optionally maintains a running **source-currency balance** per account on a dedicated sentinel transaction, so you can see at a glance that your HKD-denominated account is sitting at `HKD 1,234.56` even though YNAB only shows the USD-converted figure.
+- Optionally maintains a running **source-currency balance** per account on a dedicated sentinel transaction, so you can see at a glance that your HKD-denominated account is sitting at `1,234.56 HKD [YMCA-BAL]` even though YNAB only shows the USD-converted figure.
 
 ## Install
 
@@ -244,9 +244,9 @@ Why a sentinel transaction? The YNAB public API does not expose an "update accou
 - Cleared status: `reconciled` (to keep it out of the "needs clearing" bucket in the YNAB UI)
 - Flag color: `green` (makes it easy to spot in the register; re-applied on every run so a hand-cleared flag is restored automatically)
 - Amount: `0` (so it doesn't affect YNAB's cleared balance)
-- Memo: `[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | updated 2026-04-19T14:30:45Z | prev 1,200.00 2026-04-18T14:30:45Z | drift 0.00 USD`
+- Memo: `1,234.56 HKD [YMCA-BAL]`
 
-Open the sentinel in the YNAB register and the memo shows the current source-currency balance plus a drift check against YNAB's own cleared_balance. YMCA upserts the sentinel on every sync run; it never appears twice per account.
+Open the sentinel in the YNAB register and the memo shows the current source-currency balance in a compact, stable format. Older verbose sentinel memos are still readable and get normalized to this compact form on the next write. YMCA keeps exactly one sentinel per tracked account and only creates or updates it when the desired sentinel shape changes.
 
 Per-run behavior (delta mode, i.e. every normal `ymca sync`):
 
@@ -286,11 +286,13 @@ Rebuild mode (`ymca sync --rebuild-balance`):
 
 The rebuild respects `--account ALIAS` so you can recover a single account without rescanning the others. It is mutually exclusive with `--bootstrap-since`.
 
-## Deprecated One-Off Helpers
+## Deprecated Standalone Scripts
 
-These are not part of the supported YMCA CLI surface. They are only kept for manual repair and investigation work.
+These are frozen manual repair and investigation scripts. They are not part of the supported YMCA CLI surface, are no longer maintained, and should not drive `src/ymca` design.
 
-Preferred location:
+They are invoked directly by file path and intentionally keep their own helper code under `deprecated/one_off_scripts/` so the main runtime stays decoupled from them.
+
+Invoke them directly:
 
 ```bash
 uv run python deprecated/one_off_scripts/get_account_delta.py --last-server-knowledge 123
@@ -305,6 +307,6 @@ uv run python deprecated/one_off_scripts/fix_double_converted_transactions.py --
 ```bash
 uv sync --dev
 uv run ruff check .
-uv run mypy src tests deprecated
+uv run mypy src tests
 uv run pytest
 ```

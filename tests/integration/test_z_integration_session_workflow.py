@@ -255,7 +255,7 @@ def test_integration_session_all_workflows(integration_env: IntegrationEnvironme
     assert len(sentinels) == 1
     sentinel_id = str(sentinels[0].id)
     assert int(sentinels[0].amount) == 0
-    assert "[YMCA-BAL] HKD -5.00" in (sentinels[0].memo or "")
+    assert "-5.00 HKD [YMCA-BAL]" in (sentinels[0].memo or "")
 
     # --- uncleared → cleared (delta) ---
     row_uc = _one_raw_by_payee(raw_after_first, payee_uc)
@@ -290,7 +290,7 @@ def test_integration_session_all_workflows(integration_env: IntegrationEnvironme
     assert "[FX+] -12.34 HKD (rate: 7.8 HKD/USD)" in (row_uc2.memo or "")
     sentinels2 = _find_sentinel(raw_after_delta, hkd_id)
     assert len(sentinels2) == 1
-    assert "[YMCA-BAL] HKD -17.34" in (sentinels2[0].memo or "")
+    assert "-17.34 HKD [YMCA-BAL]" in (sentinels2[0].memo or "")
 
     # --- soft-delete a counted row; delta sync sees the tombstone (E23) ---
     state_before_delete = outcome_delta.new_state
@@ -315,10 +315,10 @@ def test_integration_session_all_workflows(integration_env: IntegrationEnvironme
     raw_del = gateway.list_plan_transactions_raw(plan_id)
     sentinels_del = _find_sentinel(raw_del, hkd_id)
     assert len(sentinels_del) == 1
-    assert "[YMCA-BAL] HKD -12.34" in (sentinels_del[0].memo or "")
+    assert "-12.34 HKD [YMCA-BAL]" in (sentinels_del[0].memo or "")
 
     # --- rebuild after hand-edited sentinel (W12) ---
-    drifted = "[YMCA-BAL] HKD 9,999.99"
+    drifted = "9,999.99 HKD [YMCA-BAL]"
     gateway.update_transaction(
         plan_id,
         TransactionUpdateRequest(
@@ -347,7 +347,7 @@ def test_integration_session_all_workflows(integration_env: IntegrationEnvironme
     raw_after_rebuild = gateway.list_plan_transactions_raw(plan_id)
     sentinel_after_rebuild = next(t for t in raw_after_rebuild if str(t.id) == sentinel_id)
     assert drifted not in (sentinel_after_rebuild.memo or "")
-    assert "[YMCA-BAL] HKD -12.34" in (sentinel_after_rebuild.memo or "")
+    assert "-12.34 HKD [YMCA-BAL]" in (sentinel_after_rebuild.memo or "")
 
     # --- transfer + partial clear (E2 pairing + directional markers), last ---
     if account_plan.hkd_secondary is not None:
@@ -409,8 +409,8 @@ def test_integration_session_all_workflows(integration_env: IntegrationEnvironme
             main_sent_1 = _find_sentinel(raw_x1, hkd_id)
             sec_sent_1 = _find_sentinel(raw_x1, sec_id)
             assert len(main_sent_1) == 1 and len(sec_sent_1) == 1
-            assert "[YMCA-BAL] HKD -32.34" in (main_sent_1[0].memo or "")
-            assert "[YMCA-BAL] HKD 0.00" in (sec_sent_1[0].memo or "")
+            assert "-32.34 HKD [YMCA-BAL]" in (main_sent_1[0].memo or "")
+            assert "0.00 HKD [YMCA-BAL]" in (sec_sent_1[0].memo or "")
 
             gateway.update_transaction(
                 plan_id,
@@ -445,5 +445,5 @@ def test_integration_session_all_workflows(integration_env: IntegrationEnvironme
 
             main_sent_2 = _find_sentinel(raw_x2, hkd_id)
             sec_sent_2 = _find_sentinel(raw_x2, sec_id)
-            assert "[YMCA-BAL] HKD -32.34" in (main_sent_2[0].memo or "")
-            assert "[YMCA-BAL] HKD 20.00" in (sec_sent_2[0].memo or "")
+            assert "-32.34 HKD [YMCA-BAL]" in (main_sent_2[0].memo or "")
+            assert "20.00 HKD [YMCA-BAL]" in (sec_sent_2[0].memo or "")

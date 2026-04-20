@@ -523,7 +523,7 @@ def test_sync_summary_prints_tracking_block_and_within_tolerance(
                     account_id="acct-1",
                     date=date(2026, 4, 19),
                     amount_milliunits=0,
-                    memo="[YMCA-BAL] HKD 123.40",
+                    memo="123.40 HKD [YMCA-BAL]",
                     payee_name="[YMCA] Tracked Balance",
                     cleared="reconciled",
                 ),

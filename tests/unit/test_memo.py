@@ -330,7 +330,7 @@ def test_build_sentinel_memo_first_time_omits_prev_section() -> None:
         stronger_currency="USD",
     )
 
-    assert memo == "[YMCA-BAL] HKD 1,234.56"
+    assert memo == "1,234.56 HKD [YMCA-BAL]"
 
 
 def test_build_sentinel_memo_ignores_extra_metadata_fields() -> None:
@@ -346,7 +346,7 @@ def test_build_sentinel_memo_ignores_extra_metadata_fields() -> None:
         stronger_currency="USD",
     )
 
-    assert memo == "[YMCA-BAL] HKD 1,234.56"
+    assert memo == "1,234.56 HKD [YMCA-BAL]"
 
 
 def test_parse_sentinel_memo_round_trip_simple_shape() -> None:
@@ -363,6 +363,14 @@ def test_parse_sentinel_memo_round_trip_simple_shape() -> None:
     )
 
     parsed = parse_sentinel_memo(memo)
+
+    assert parsed is not None
+    assert parsed["currency"] == "GBP"
+    assert parsed["balance_milliunits"] == -120050
+
+
+def test_parse_sentinel_memo_reads_legacy_compact_shape() -> None:
+    parsed = parse_sentinel_memo("[YMCA-BAL] GBP -120.05")
 
     assert parsed is not None
     assert parsed["currency"] == "GBP"
