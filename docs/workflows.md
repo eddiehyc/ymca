@@ -93,7 +93,7 @@ Script: [`deprecated/one_off_scripts/get_account_delta.py`](../deprecated/one_of
 
 ## W11. `ymca sync` with local currency tracking
 
-Opt-in, per-account. When an account has `track_local_balance: true`, `ymca sync` additionally maintains a source-currency running balance on a dedicated YNAB sentinel transaction (payee name `[YMCA] Tracked Balance`, amount `0`, cleared status `reconciled`). Balance updates are delta-based: a new cleared/reconciled transaction adds to the balance, a subsequent delete of such a transaction subtracts; uncleared transitions are not tracked (see E24, E25). Tolerance check at the end of the run warns if the tracked balance drifts beyond `0.01` stronger-currency units vs YNAB's `cleared_balance`.
+Opt-in, per-account. When an account has `track_local_balance: true`, `ymca sync` additionally maintains a source-currency running balance on a dedicated YNAB sentinel transaction (payee name `[YMCA] Tracked Balance`, amount `0`, cleared status `reconciled`). Balance updates are delta-based: a new cleared/reconciled transaction adds to the balance, a subsequent delete of such a transaction subtracts; uncleared transitions are not tracked (see E24, E25). Quiet deltas with no balance change leave the sentinel untouched. Tolerance check at the end of the run warns if the tracked balance drifts beyond `0.01` stronger-currency units vs YNAB's `cleared_balance`.
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) and [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — covers the transition matrix, sentinel upsert, tolerance math.
 - Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_local_currency_tracking_lifecycle_workflow`.

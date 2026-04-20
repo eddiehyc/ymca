@@ -305,13 +305,10 @@ def test_build_sentinel_memo_first_time_omits_prev_section() -> None:
         stronger_currency="USD",
     )
 
-    assert memo == (
-        "[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | "
-        "updated 2026-04-19T14:30:45Z | drift 0.00 USD"
-    )
+    assert memo == "[YMCA-BAL] HKD 1,234.56"
 
 
-def test_build_sentinel_memo_includes_prev_section_when_provided() -> None:
+def test_build_sentinel_memo_ignores_extra_metadata_fields() -> None:
     memo = build_sentinel_memo(
         currency="HKD",
         balance_milliunits=1234560,
@@ -324,14 +321,10 @@ def test_build_sentinel_memo_includes_prev_section_when_provided() -> None:
         stronger_currency="USD",
     )
 
-    assert memo == (
-        "[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | "
-        "updated 2026-04-19T14:30:45Z | "
-        "prev 1,200.00 2026-04-18T14:30:45Z | drift -0.05 USD"
-    )
+    assert memo == "[YMCA-BAL] HKD 1,234.56"
 
 
-def test_parse_sentinel_memo_round_trip_with_prev() -> None:
+def test_parse_sentinel_memo_round_trip_simple_shape() -> None:
     memo = build_sentinel_memo(
         currency="GBP",
         balance_milliunits=-120050,
@@ -342,6 +335,20 @@ def test_parse_sentinel_memo_round_trip_with_prev() -> None:
         prev_updated_at=datetime(2026, 4, 18, 14, 30, 45, tzinfo=UTC),
         drift_milliunits_stronger=20,
         stronger_currency="GBP",
+    )
+
+    parsed = parse_sentinel_memo(memo)
+
+    assert parsed is not None
+    assert parsed["currency"] == "GBP"
+    assert parsed["balance_milliunits"] == -120050
+
+
+def test_parse_sentinel_memo_reads_legacy_verbose_shape() -> None:
+    memo = (
+        "[YMCA-BAL] GBP -120.05 | rate 1.35 USD/GBP | "
+        "updated 2026-04-19T14:30:45Z | "
+        "prev -100.00 2026-04-18T14:30:45Z | drift 0.02 GBP"
     )
 
     parsed = parse_sentinel_memo(memo)

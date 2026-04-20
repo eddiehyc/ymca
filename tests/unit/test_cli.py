@@ -523,8 +523,7 @@ def test_sync_summary_prints_tracking_block_and_within_tolerance(
                     account_id="acct-1",
                     date=date(2026, 4, 19),
                     amount_milliunits=0,
-                    memo="[YMCA-BAL] HKD 123.40 | rate 7.8 HKD/USD | "
-                    "updated 2026-04-19T14:30:45Z | drift 0.00 USD",
+                    memo="[YMCA-BAL] HKD 123.40",
                     payee_name="[YMCA] Tracked Balance",
                     cleared="reconciled",
                 ),

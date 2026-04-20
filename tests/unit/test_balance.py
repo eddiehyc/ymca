@@ -222,8 +222,7 @@ def test_build_tracking_update_adds_new_cleared_transaction() -> None:
     assert result.memo_flips == ()
 
 
-def test_sentinel_create_and_update_carry_the_green_flag() -> None:
-    """Every sentinel write re-applies the flag so hand-cleared flags are restored."""
+def test_sentinel_create_carries_the_green_flag() -> None:
     plan = _plan()
 
     # First run: no prior sentinel → create request carries the flag.
@@ -242,7 +241,7 @@ def test_sentinel_create_and_update_carry_the_green_flag() -> None:
     assert create_result.create_sentinel.flag_color == "green"
     assert create_result.update_sentinel is None
 
-    # Second run: prior sentinel exists → update request also carries the flag.
+    # Quiet delta: prior sentinel already matches the desired balance, so no write is needed.
     sentinel_memo = build_sentinel_memo(
         currency="HKD",
         balance_milliunits=5000,
@@ -272,8 +271,7 @@ def test_sentinel_create_and_update_carry_the_green_flag() -> None:
         prompt_for_transfer_direction=None,
     )
     assert update_result.create_sentinel is None
-    assert update_result.update_sentinel is not None
-    assert update_result.update_sentinel.flag_color == "green"
+    assert update_result.update_sentinel is None
 
 
 def test_build_tracking_update_ignores_uncleared_new_transaction() -> None:
@@ -634,7 +632,8 @@ def test_build_tracking_update_carries_prior_balance_and_updates_sentinel() -> N
     assert result.create_sentinel is None
     assert result.update_sentinel is not None
     assert result.update_sentinel.transaction_id == "sentinel"
-    assert "prev 1,000.00" in result.update_sentinel.memo
+    assert result.update_sentinel.memo == "[YMCA-BAL] HKD 1,050.00"
+    assert result.update_sentinel.flag_color == "green"
 
 
 def test_build_tracking_update_skips_sentinel_from_contributions() -> None:
@@ -984,6 +983,33 @@ def test_build_tracking_update_unparseable_prior_sentinel_still_upserts() -> Non
     assert result.prior_sentinel is None
     assert result.update_sentinel is not None
     assert result.update_sentinel.transaction_id == "broken"
+
+
+def test_build_tracking_update_repairs_nonzero_sentinel_amount() -> None:
+    plan = _plan()
+    sentinel = _txn(
+        txn_id="sentinel",
+        amount_milliunits=5000,
+        memo="[YMCA-BAL] HKD 5.00",
+        payee_name=SENTINEL_PAYEE_NAME,
+        cleared="reconciled",
+    )
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(),
+        transactions=[sentinel],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert result.update_sentinel is not None
+    assert result.update_sentinel.amount_milliunits == 0
+    assert result.update_sentinel.memo == "[YMCA-BAL] HKD 5.00"
 
 
 def test_gbp_tracking_drift_reports_in_gbp() -> None:

@@ -219,19 +219,9 @@ def build_tracking_update(
         rule=rule,
     )
 
-    prev_updated_at = _sentinel_updated_at(prior_sentinel)
     new_memo = build_sentinel_memo(
         currency=account.currency,
         balance_milliunits=new_balance,
-        rate_text=rule.rate_text,
-        pair_label=pair_label,
-        updated_at=now_utc,
-        prev_balance_milliunits=(
-            prior_sentinel.balance_milliunits if prior_sentinel is not None else None
-        ),
-        prev_updated_at=prev_updated_at,
-        drift_milliunits_stronger=drift,
-        stronger_currency=stronger,
     )
 
     create_request: NewTransactionRequest | None = None
@@ -247,14 +237,16 @@ def build_tracking_update(
             flag_color=SENTINEL_FLAG_COLOR,
         )
     else:
-        # Re-apply the flag on every update so a hand-cleared flag gets
-        # restored automatically on the next sync run.
-        update_request = TransactionUpdateRequest(
-            transaction_id=prior_sentinel_txn.id,
-            amount_milliunits=None,
-            memo=new_memo,
-            flag_color=SENTINEL_FLAG_COLOR,
+        sentinel_needs_update = (
+            prior_sentinel_txn.memo != new_memo or prior_sentinel_txn.amount_milliunits != 0
         )
+        if sentinel_needs_update:
+            update_request = TransactionUpdateRequest(
+                transaction_id=prior_sentinel_txn.id,
+                amount_milliunits=0,
+                memo=new_memo,
+                flag_color=SENTINEL_FLAG_COLOR,
+            )
 
     return PreparedTrackingUpdate(
         account_alias=account.alias,
@@ -603,12 +595,4 @@ def _resolve_marked_source_milliunits(
 
 def _sentinel_updated_at(snapshot: SentinelSnapshot | None) -> datetime | None:
     """Extract the ``updated_at`` from a prior sentinel memo, if any."""
-    if snapshot is None:
-        return None
-    parsed = parse_sentinel_memo(snapshot.memo)
-    if parsed is None:
-        return None
-    value = parsed.get("updated_at")
-    if isinstance(value, datetime):
-        return value
     return None

@@ -368,21 +368,21 @@ accounts:
 - **Payee name**: `[YMCA] Tracked Balance` (constant; used as the detection key).
 - **Amount**: `0` milliunits.
 - **Cleared status**: `reconciled` (keeps it out of the "needs clearing" UI bucket).
-- **Flag color**: `green`. Makes the sentinel visually distinct in the YNAB register and is re-applied on every sync run, so a hand-cleared flag is restored automatically on the next run.
+- **Flag color**: `green`. Makes the sentinel visually distinct in the YNAB register and is re-applied whenever YMCA writes the sentinel.
 - **Date**: the date of the last update in the account's local timezone.
-- **Memo** (single-line, pipe-separated):
+- **Memo** (single-line):
 
 ```text
-[YMCA-BAL] <CCY> <amount> | rate <rate_text> <PAIR> | updated <ISO8601_UTC> | prev <prev_amount> <prev_ISO8601_UTC> | drift <drift_signed> <stronger_CCY>
+[YMCA-BAL] <CCY> <amount>
 ```
 
 Example:
 
 ```text
-[YMCA-BAL] HKD 1,234.56 | rate 7.8 HKD/USD | updated 2026-04-19T14:30:45Z | prev 1,200.00 2026-04-18T14:30:45Z | drift 0.00 USD
+[YMCA-BAL] HKD 1,234.56
 ```
 
-`prev ...` is omitted on the first write. The amount is rounded to two decimal places, with thousands separators, matching the existing `[FX]` memo style.
+The amount is rounded to two decimal places, with thousands separators, matching the existing `[FX]` memo style. Older verbose sentinel memos remain readable and are normalized to the simplified form on the next write.
 
 The sentinel transaction itself is always excluded from FX conversion and from the running-balance computation (detected by exact payee-name match).
 
@@ -410,7 +410,7 @@ Concretely, for every tracked account on a normal (non-rebuild) `ymca sync` run:
    - **Unmarked, not deleted**: goes through the normal FX conversion path. The marker written at convert time is `[FX+]` when `should_be_counted` is true and `[FX]` otherwise. Balance contribution is the YNAB `amount_milliunits` (still in source currency at this point) when `should_be_counted` is true, zero otherwise.
    - **Marked (current or legacy)**: apply the 2×2 above. The memo flip happens as a batched `update_transactions` call right before the sentinel upsert.
 4. Run the tolerance check (§12.6). Emit a warning if drift exceeds the threshold; do not block the run.
-5. Upsert the sentinel transaction so its memo reflects the new balance. First enablement creates the sentinel via `create_transaction` and records the resulting id into `state.yaml`; subsequent runs update it via `update_transaction` using the id from step 2.
+5. Upsert the sentinel transaction only when its stored balance/shape differs from the desired state. First enablement creates the sentinel via `create_transaction` and records the resulting id into `state.yaml`; subsequent runs update it via `update_transaction` using the id from step 2. Quiet deltas with no balance change leave the sentinel untouched.
 
 Because the counted bit is recorded in the memo itself, the engine correctly handles every status transition the user can make through the YNAB UI: `uncleared → cleared`, `cleared → uncleared`, `cleared → reconciled` (no double-count), `cleared → deleted`, `cleared → uncleared → cleared` (net zero). There is exactly one class of user action the engine cannot absorb: see §12.8.
 

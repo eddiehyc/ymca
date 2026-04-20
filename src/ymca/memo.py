@@ -46,6 +46,13 @@ _SENTINEL_ISO_PATTERN = r"[0-9T:\-Z.+]+"
 _SENTINEL_PATTERN = (
     r"^\[YMCA-BAL\]\s+"
     r"(?P<currency>[A-Z]{3})\s+"
+    r"(?P<amount>" + _AMOUNT_PATTERN + r")$"
+)
+SENTINEL_MEMO_RE = re.compile(_SENTINEL_PATTERN)
+
+_LEGACY_SENTINEL_PATTERN = (
+    r"^\[YMCA-BAL\]\s+"
+    r"(?P<currency>[A-Z]{3})\s+"
     r"(?P<amount>" + _AMOUNT_PATTERN + r")\s+\|\s+"
     r"rate\s+(?P<rate>[0-9]+(?:\.[0-9]+)?)\s+(?P<pair>[A-Z]{3}/[A-Z]{3})\s+\|\s+"
     r"updated\s+(?P<updated>" + _SENTINEL_ISO_PATTERN + r")"
@@ -53,7 +60,7 @@ _SENTINEL_PATTERN = (
     r"\s+(?P<prev_updated>" + _SENTINEL_ISO_PATTERN + r"))?"
     r"\s+\|\s+drift\s+(?P<drift>" + _AMOUNT_PATTERN + r")\s+(?P<stronger>[A-Z]{3})$"
 )
-SENTINEL_MEMO_RE = re.compile(_SENTINEL_PATTERN)
+LEGACY_SENTINEL_MEMO_RE = re.compile(_LEGACY_SENTINEL_PATTERN)
 
 
 def has_fx_marker(memo: str | None) -> bool:
@@ -293,30 +300,21 @@ def build_sentinel_memo(
     *,
     currency: str,
     balance_milliunits: int,
-    rate_text: str,
-    pair_label: str,
-    updated_at: datetime,
+    rate_text: str | None = None,
+    pair_label: str | None = None,
+    updated_at: datetime | None = None,
     prev_balance_milliunits: int | None = None,
     prev_updated_at: datetime | None = None,
-    drift_milliunits_stronger: int,
-    stronger_currency: str,
+    drift_milliunits_stronger: int | None = None,
+    stronger_currency: str | None = None,
 ) -> str:
     """Build the single-line sentinel memo string per spec §12.3."""
-    amount_text = format_balance_milliunits(balance_milliunits)
-    updated_text = _format_sentinel_datetime(updated_at)
-    drift_text = format_balance_milliunits(drift_milliunits_stronger)
+    del rate_text, pair_label, updated_at
+    del prev_balance_milliunits, prev_updated_at
+    del drift_milliunits_stronger, stronger_currency
 
-    parts = [
-        f"[YMCA-BAL] {currency} {amount_text}",
-        f"rate {rate_text} {pair_label}",
-        f"updated {updated_text}",
-    ]
-    if prev_balance_milliunits is not None and prev_updated_at is not None:
-        prev_amount_text = format_balance_milliunits(prev_balance_milliunits)
-        prev_updated_text = _format_sentinel_datetime(prev_updated_at)
-        parts.append(f"prev {prev_amount_text} {prev_updated_text}")
-    parts.append(f"drift {drift_text} {stronger_currency}")
-    return " | ".join(parts)
+    amount_text = format_balance_milliunits(balance_milliunits)
+    return f"[YMCA-BAL] {currency} {amount_text}"
 
 
 def parse_sentinel_memo(memo: str | None) -> dict[str, object] | None:
@@ -326,20 +324,28 @@ def parse_sentinel_memo(memo: str | None) -> dict[str, object] | None:
     """
     if memo is None:
         return None
-    match = SENTINEL_MEMO_RE.match(memo.strip())
-    if match is None:
+    stripped = memo.strip()
+    match = SENTINEL_MEMO_RE.match(stripped)
+    if match is not None:
+        return {
+            "currency": match.group("currency"),
+            "balance_milliunits": amount_text_to_milliunits(match.group("amount")),
+        }
+
+    legacy_match = LEGACY_SENTINEL_MEMO_RE.match(stripped)
+    if legacy_match is None:
         return None
 
-    currency = match.group("currency")
-    amount_milliunits = amount_text_to_milliunits(match.group("amount"))
-    rate = match.group("rate")
-    pair = match.group("pair")
-    updated_at = _parse_sentinel_datetime(match.group("updated"))
-    stronger = match.group("stronger")
-    drift_milliunits = amount_text_to_milliunits(match.group("drift"))
+    currency = legacy_match.group("currency")
+    amount_milliunits = amount_text_to_milliunits(legacy_match.group("amount"))
+    rate = legacy_match.group("rate")
+    pair = legacy_match.group("pair")
+    updated_at = _parse_sentinel_datetime(legacy_match.group("updated"))
+    stronger = legacy_match.group("stronger")
+    drift_milliunits = amount_text_to_milliunits(legacy_match.group("drift"))
 
-    prev_amount_text = match.group("prev_amount")
-    prev_updated_text = match.group("prev_updated")
+    prev_amount_text = legacy_match.group("prev_amount")
+    prev_updated_text = legacy_match.group("prev_updated")
     prev_balance_milliunits: int | None = None
     prev_updated_at: datetime | None = None
     if prev_amount_text is not None and prev_updated_text is not None:

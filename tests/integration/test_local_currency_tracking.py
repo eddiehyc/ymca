@@ -146,7 +146,6 @@ def test_local_currency_tracking_full_lifecycle(
     sentinel = sentinel_rows[0]
     assert int(sentinel.amount) == 0
     assert "[YMCA-BAL] HKD -12.34" in (sentinel.memo or "")
-    assert "rate 7.8 HKD/USD" in (sentinel.memo or "")
     sentinel_id = str(sentinel.id)
     sentinel_memo_after_first = sentinel.memo or ""
 
@@ -156,11 +155,27 @@ def test_local_currency_tracking_full_lifecycle(
     assert int(seed_after_first.amount) == -1582
     assert "[FX] -12.34 HKD (rate: 7.8 HKD/USD)" in (seed_after_first.memo or "")
 
-    # 4. Hand-edit the sentinel memo to simulate drift, then trigger a rebuild.
-    drifted_memo = (
-        "[YMCA-BAL] HKD 9,999.99 | rate 7.8 HKD/USD | "
-        "updated 2000-01-01T00:00:00Z | drift 0.00 USD"
+    # 4. Quiet delta after the initial apply should leave the sentinel untouched.
+    quiet_prepared = build_prepared_conversion(
+        plan=plan_config,
+        state=outcome.new_state,
+        gateway=gateway,
+        selected_account_aliases=("hkd_main",),
+        bootstrap_since=None,
+        prompt_for_start_date=_prompt_never_called,
     )
+    assert quiet_prepared.tracking[0].update_sentinel is None
+    quiet_outcome = execute_conversion(
+        prepared=quiet_prepared,
+        state=outcome.new_state,
+        gateway=gateway,
+        apply_updates=True,
+    )
+    assert quiet_outcome.applied is True
+    assert quiet_outcome.sentinel_writes == 0
+
+    # 5. Hand-edit the sentinel memo to simulate drift, then trigger a rebuild.
+    drifted_memo = "[YMCA-BAL] HKD 9,999.99"
     gateway.update_transaction(
         plan_id,
         TransactionUpdateRequest(
@@ -207,7 +222,7 @@ def test_local_currency_tracking_full_lifecycle(
     assert sentinel_memo_after_rebuild != drifted_memo
     assert "[YMCA-BAL] HKD -12.34" in sentinel_memo_after_rebuild
 
-    # 5. Soft-delete the seeded transaction, rerun delta-mode sync, verify reversal.
+    # 6. Soft-delete the seeded transaction, rerun delta-mode sync, verify reversal.
     gateway.delete_transaction(plan_id, seeded_id)
 
     prepared_after_delete = build_prepared_conversion(

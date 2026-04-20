@@ -269,6 +269,14 @@ def test_local_currency_tracking_lifecycle_workflow(
     rebuilt_sentinel = gateway.detail(sentinel_id)
     assert "[YMCA-BAL] HKD 0.00" in (rebuilt_sentinel.memo or "")
 
+    writes_before_quiet_run = len(gateway.updates)
+    quiet_exit = main(["sync", "--apply"])
+    quiet_output = capsys.readouterr()
+
+    assert quiet_exit == 0
+    assert "Sentinel writes:" not in quiet_output.out
+    assert len(gateway.updates) == writes_before_quiet_run
+
 
 def test_migrate_legacy_memo_workflow(
     tmp_path: Path,
