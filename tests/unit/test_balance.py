@@ -750,6 +750,7 @@ def test_build_tracking_update_carries_prior_balance_and_updates_sentinel() -> N
     assert result.create_sentinel is None
     assert result.update_sentinel is not None
     assert result.update_sentinel.transaction_id == "sentinel"
+    assert result.update_sentinel.date == _NOW.date()
     assert result.update_sentinel.memo == "1,050.00 HKD [YMCA-BAL]"
     assert result.update_sentinel.flag_color == "green"
 
@@ -1126,6 +1127,7 @@ def test_build_tracking_update_repairs_nonzero_sentinel_amount() -> None:
     )
 
     assert result.update_sentinel is not None
+    assert result.update_sentinel.date == _NOW.date()
     assert result.update_sentinel.amount_milliunits == 0
     assert result.update_sentinel.memo == "5.00 HKD [YMCA-BAL]"
 

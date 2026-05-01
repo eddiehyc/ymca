@@ -248,6 +248,7 @@ def build_tracking_update(
         if sentinel_needs_update:
             update_request = TransactionUpdateRequest(
                 transaction_id=prior_sentinel_txn.id,
+                date=now_utc.date(),
                 amount_milliunits=0,
                 memo=new_memo,
                 flag_color=SENTINEL_FLAG_COLOR,
