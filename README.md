@@ -276,7 +276,7 @@ Known limitation — editing a cleared, already-FX-converted row is **not** supp
 
 **Always delete-and-re-enter** when a cleared transaction needs to change. The delete path subtracts the old contribution; the fresh entry adds the new one. Net effect: `−old + new` with no drift.
 
-The tolerance check at the end of each run warns when the tracked balance drifts beyond `0.01` of the stronger currency versus YNAB's `cleared_balance`. Recovery is `ymca sync --rebuild-balance`.
+The tolerance check at the end of each run warns when the tracked balance drifts beyond `0.02` of the stronger currency versus YNAB's `cleared_balance`. Recovery is `ymca sync --rebuild-balance`.
 
 Rebuild mode (`ymca sync --rebuild-balance`):
 

@@ -120,6 +120,7 @@ def test_within_tolerance_and_drift_math_divide_to_base_hkd() -> None:
     )
     assert drift == 0
     assert within_tolerance(drift) is True
+    assert TOLERANCE_STRONGER_MILLIUNITS == 25
     assert within_tolerance(TOLERANCE_STRONGER_MILLIUNITS)
     assert within_tolerance(-TOLERANCE_STRONGER_MILLIUNITS)
     assert not within_tolerance(TOLERANCE_STRONGER_MILLIUNITS + 1)

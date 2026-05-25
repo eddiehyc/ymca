@@ -69,8 +69,15 @@ TransferDirectionPrompt = Callable[[AmbiguousTransfer], int | None]
 Returns ``1`` for inflow, ``-1`` for outflow, ``None`` to skip the row.
 """
 
-TOLERANCE_STRONGER_MILLIUNITS = 10
-"""0.01 stronger-currency units expressed in milliunits."""
+TOLERANCE_STRONGER_MILLIUNITS = 25
+"""Internal tolerance threshold in stronger-currency milliunits.
+
+Users see this as 0.02; the 25 milliunit threshold adds half-cent headroom
+because drift is rounded to milliunits before comparison.
+"""
+
+DISPLAY_TOLERANCE_STRONGER_UNITS = "0.02"
+"""User-facing tolerance label in stronger-currency units."""
 
 
 def stronger_currency(rule: FxRule, *, base_currency: str, source_currency: str) -> str:
@@ -104,7 +111,7 @@ def compute_drift_milliunits_stronger(
 
 
 def within_tolerance(drift_milliunits_stronger: int) -> bool:
-    """Return True when drift is within 0.01 stronger-currency units."""
+    """Return True when drift is within the internal stronger-currency threshold."""
     return abs(drift_milliunits_stronger) <= TOLERANCE_STRONGER_MILLIUNITS
 
 

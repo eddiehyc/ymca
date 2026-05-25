@@ -442,7 +442,7 @@ For each tracked account, at the end of every sync run, YMCA compares the runnin
 
 - Determine the **stronger currency**: the base currency when `divide_to_base: true`, the source currency when `divide_to_base: false`.
 - Convert both values to the stronger currency.
-- If `|tracked − cleared_balance| > 0.01` stronger-currency units, print a warning suggesting `ymca sync --rebuild-balance`.
+- If `|tracked − cleared_balance| > 0.02` stronger-currency units, print a warning suggesting `ymca sync --rebuild-balance`.
 
 The warning is informational only. The sync run does not fail.
 

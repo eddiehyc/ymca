@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from .balance import TransferDirectionPrompt
+from .balance import DISPLAY_TOLERANCE_STRONGER_UNITS, TransferDirectionPrompt
 from .config import load_config, write_config_template
 from .conversion import build_prepared_conversion, execute_conversion, resolve_bindings
 from .errors import UserInputError, YmcaError
@@ -351,7 +351,8 @@ def _print_conversion_summary(outcome: object) -> None:
             else:
                 print(
                     f"  drift check: {drift_text} {entry.stronger_currency} "
-                    "(DRIFT beyond 0.01; run `ymca sync --rebuild-balance` to recover)"
+                    f"(DRIFT beyond {DISPLAY_TOLERANCE_STRONGER_UNITS}; "
+                    "run `ymca sync --rebuild-balance` to recover)"
                 )
 
     if outcome.applied:

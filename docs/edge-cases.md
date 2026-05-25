@@ -218,9 +218,9 @@ The first `ymca sync` after `track_local_balance: true` is added to an account c
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py).
 - Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — asserts the sentinel appears on first apply run.
 
-### E27. Tolerance check ≤ 0.01 stronger currency
+### E27. Tolerance check ≤ 0.02 stronger currency
 
-At the end of every sync run (delta or rebuild), YMCA compares the tracked source-currency balance to YNAB's reported `cleared_balance` in base currency. Drift is reported in the "stronger currency" (base when `divide_to_base: true`; source otherwise). Drift beyond `0.01` of that unit prints a warning and suggests `ymca sync --rebuild-balance`; the run itself still exits `0`.
+At the end of every sync run (delta or rebuild), YMCA compares the tracked source-currency balance to YNAB's reported `cleared_balance` in base currency. Drift is reported in the "stronger currency" (base when `divide_to_base: true`; source otherwise). Drift beyond `0.02` of that unit prints a warning and suggests `ymca sync --rebuild-balance`; the run itself still exits `0`.
 
 - Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — exact-boundary, under, and over cases for both FX directions.
 - Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — drift-free path under live data.

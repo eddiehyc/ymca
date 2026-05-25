@@ -806,5 +806,5 @@ def test_sync_summary_warns_on_drift_beyond_tolerance(
     captured = capsys.readouterr()
 
     assert "Balance mode: REBUILD" in captured.out
-    assert "DRIFT beyond 0.01" in captured.out
+    assert "DRIFT beyond 0.02" in captured.out
     assert "ymca sync --rebuild-balance" in captured.out
