@@ -126,7 +126,8 @@ def test_sync_apply_then_quiet_delta_workflow(
     assert first_exit == 0
     assert "Writes applied: 1" in first_output.out
     converted = gateway.detail("txn-1")
-    assert converted.amount_milliunits == -1582
+    assert converted.amount_milliunits == -1580
+    assert converted.amount_milliunits % 10 == 0
     assert converted.memo == "Dinner | [FX] -12.34 HKD (rate: 7.8 HKD/USD)"
 
     saved_state = load_state(state_path)
@@ -192,7 +193,7 @@ def test_sync_bootstrap_and_account_filter_workflow(
 
     assert exit_code == 0
     assert "Writes applied: 1" in output.out
-    assert gateway.detail("txn-hkd").amount_milliunits == -1582
+    assert gateway.detail("txn-hkd").amount_milliunits == -1580
     assert gateway.detail("txn-gbp").amount_milliunits == -1000
     assert gateway.detail("txn-gbp").memo == "GBP spend"
 

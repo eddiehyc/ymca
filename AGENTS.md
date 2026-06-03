@@ -18,7 +18,7 @@
 - Keep the codebase strongly typed.
 - Prefer immutable typed models for business logic over loose dicts.
 - Keep YNAB SDK usage inside the adapter layer; map SDK models into internal models before business logic touches them.
-- Preserve the append-style FX memo format and milliunit-precision conversion behavior unless the spec changes.
+- Preserve the append-style FX memo format and cent-precision conversion behavior unless the spec changes.
 
 ## Testing Requirements
 ### Unit Test

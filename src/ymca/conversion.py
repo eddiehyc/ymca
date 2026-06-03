@@ -41,7 +41,18 @@ from .models import (
 )
 from .state import plan_state_for, upsert_plan_state
 
-_WHOLE_MILLIUNIT = Decimal("1")
+_ONE_CENT_IN_MILLIUNITS = Decimal("1E1")
+"""Quantum for the converted-amount uploads.
+
+Converted USD (base-currency) amounts are stored at cent precision (10
+milliunits) rather than milliunit precision so YNAB's displayed account
+balance (which cent-rounds each transaction for display) equals the raw sum
+of stored milliunit amounts. See ``docs/spec.md`` §7.3.
+
+The literal ``"1E1"`` (exponent +1) is intentional: ``Decimal.quantize`` uses
+the *exponent* of its argument, so ``Decimal("10")`` (exponent 0) would round
+to the nearest integer, not to the nearest ten.
+"""
 
 
 class YnabGateway(Protocol):
@@ -650,7 +661,7 @@ def _convert_amount_milliunits(
         converted = source_amount / rate
     else:
         converted = source_amount * rate
-    rounded = converted.quantize(_WHOLE_MILLIUNIT, rounding=ROUND_HALF_UP)
+    rounded = converted.quantize(_ONE_CENT_IN_MILLIUNITS, rounding=ROUND_HALF_UP)
     return int(rounded)
 
 

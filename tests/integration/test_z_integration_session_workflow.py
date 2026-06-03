@@ -236,10 +236,14 @@ def test_integration_session_all_workflows(integration_env: IntegrationEnvironme
     raw_after_first = gateway.list_plan_transactions_raw(plan_id)
     row_uc = _one_raw_by_payee(raw_after_first, payee_uc)
     row_cl = _one_raw_by_payee(raw_after_first, payee_cl)
-    assert int(row_uc.amount) == -1582
+    # Cent-precision conversion: -12340 HKD / 7.8 = -1582.05... cent-rounds to -1580.
+    assert int(row_uc.amount) == -1580
+    assert int(row_uc.amount) % 10 == 0
     assert "[FX] -12.34 HKD (rate: 7.8 HKD/USD)" in (row_uc.memo or "")
     assert "[FX+]" not in (row_uc.memo or "")
-    assert int(row_cl.amount) == -641
+    # Cent-precision conversion: -5000 HKD / 7.8 = -641.03... cent-rounds to -640.
+    assert int(row_cl.amount) == -640
+    assert int(row_cl.amount) % 10 == 0
     assert "[FX+]" in (row_cl.memo or "")
     assert "5 HKD" in (row_cl.memo or "") and "rate: 7.8 HKD/USD" in (row_cl.memo or "")
 

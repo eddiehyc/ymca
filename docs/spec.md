@@ -20,7 +20,7 @@ The product is intentionally local-first:
 - Keep the codebase strongly typed.
 - Keep config human-edited and identifier-free.
 - Persist YNAB delta sync state locally.
-- Preserve milliunit precision when converting and uploading amounts.
+- Round uploaded converted amounts to cent precision so the displayed account balance matches the stored transaction sum.
 - Append a deterministic FX memo marker for idempotency.
 - Keep the conversion engine reusable for a later web application.
 
@@ -211,14 +211,17 @@ The main CLI skips:
 
 - YNAB amounts are treated as milliunits
 - conversion uses `Decimal`
-- uploads are rounded to the nearest milliunit
+- uploads are rounded to the nearest **cent** (10 milliunits) using `ROUND_HALF_UP`
 - FX `rate` values from config are not rounded for conversion math; memo markers use a shorter display form for the same rate (see Memo Format)
+
+Cent-precision uploads keep YNAB's displayed account balance (which cent-rounds each transaction for display) equal to the raw sum of stored milliunit transaction amounts. The source-currency memo payload preserves the original precision (typically two decimal places) so local-currency tracking still computes from the exact figure.
 
 Example:
 
 - YNAB amount `12340` means `12.34`
-- with `7.8 HKD/USD`, YMCA uploads `1582`
-- it does not round to `1580`
+- with `7.8 HKD/USD`, the exact conversion is `1582.05…`
+- YMCA uploads `1580` (the nearest cent), not `1582` (the nearest milliunit)
+- the memo still records the exact source amount `12.34 HKD`
 
 ### 7.4 Transfer Handling
 

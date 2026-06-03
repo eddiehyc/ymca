@@ -64,12 +64,12 @@ Transactions with `deleted: true` are skipped. They must not contribute to `writ
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_skips_deleted_and_split_transactions`.
 - Integration: covered implicitly by the leftover-sweep teardown; deleted transactions in the test plan never appear in subsequent runs' work set.
 
-### E8. Milliunit-precision conversion (HKD divide)
+### E8. Cent-precision conversion (HKD divide)
 
-YNAB amounts are milliunits; rounding happens at milliunit precision, not cent precision. `12340` at `7.8 HKD/USD` uploads `1582`, not `1580`.
+YNAB amounts are milliunits, but FX-converted uploads are rounded to the nearest cent (10 milliunits) so the displayed account balance equals the sum of stored transaction amounts. `12340` at `7.8 HKD/USD` uploads `1580`, not `1582`. See §7.3 of [`spec.md`](spec.md).
 
-- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — asserts `converted_amount_milliunits == 1582` in the HKD tests.
-- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — HKD seed uses an amount sensitive to milliunit rounding, asserts the post-apply amount matches.
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_convert_amount_milliunits_stores_cent_aligned_amounts` parametrically asserts cent alignment; the HKD round-trip test asserts `converted_amount_milliunits == 1580`.
+- Integration: [`tests/integration/test_z_integration_session_workflow.py`](../tests/integration/test_z_integration_session_workflow.py) — HKD seed uses an amount sensitive to rounding direction (`-12340 HKD / 7.8`) and asserts the post-apply amount is `-1580` and cent-aligned (`% 10 == 0`).
 
 ### E9. Multiply FX path (`divide_to_base: false`, GBP)
 

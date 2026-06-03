@@ -28,7 +28,7 @@ from ymca.models import (
 )
 
 
-def test_build_prepared_conversion_uses_milliunit_precision_and_skips_marked_transactions() -> None:
+def test_build_prepared_conversion_uses_cent_precision_and_skips_marked_transactions() -> None:
     plan = PlanConfig(
         alias="personal",
         name="Example Plan",
@@ -112,10 +112,51 @@ def test_build_prepared_conversion_uses_milliunit_precision_and_skips_marked_tra
     assert prepared.sync_request.last_knowledge_of_server == 12
     assert prepared.queried_account_ids == ("acct-1",)
     assert len(prepared.updates) == 1
-    assert prepared.updates[0].converted_amount_milliunits == 1582
+    assert prepared.updates[0].converted_amount_milliunits == 1580
     assert prepared.updates[0].new_memo == "Dinner | [FX] 12.34 HKD (rate: 7.8 HKD/USD)"
     assert len(prepared.skipped) == 1
     assert prepared.skipped[0].reason == "already-converted"
+
+
+@pytest.mark.parametrize(
+    ("source_amount_milliunits", "rate", "divide_to_base", "expected"),
+    [
+        # divide_to_base=True: USD = source / rate
+        (12340, "7.8", True, 1580),  # 1582.05... -> 1580 (cent)
+        (-12340, "7.8", True, -1580),
+        (1000, "7.8", True, 130),  # 128.20... -> 130
+        (-67900, "7.8", True, -8710),  # -8705.13... -> -8710
+        (200000, "7.8", True, 25640),  # 25641.02... -> 25640
+        (-810000, "7.8", True, -103850),  # -103846.15... -> -103850
+        (0, "7.8", True, 0),
+        # Exact rate that produces cent-aligned output remains exact
+        (7800, "7.8", True, 1000),  # exactly 1.000 USD
+        # divide_to_base=False: USD = source * rate
+        (1000, "1.35", False, 1350),  # exactly 1.350 USD
+        (1234, "1.35", False, 1670),  # 1665.9 -> 1670
+        (-1000, "1.35", False, -1350),
+    ],
+)
+def test_convert_amount_milliunits_stores_cent_aligned_amounts(
+    source_amount_milliunits: int,
+    rate: str,
+    divide_to_base: bool,
+    expected: int,
+) -> None:
+    """The converted amount is always a multiple of 10 milliunits (cent precision).
+
+    This guarantees YNAB's displayed account balance (which sums cent-rounded
+    transaction amounts) equals the raw sum of stored milliunit amounts.
+    """
+    from ymca.conversion import _convert_amount_milliunits
+
+    result = _convert_amount_milliunits(
+        source_amount_milliunits,
+        divide_to_base=divide_to_base,
+        rate=Decimal(rate),
+    )
+    assert result == expected
+    assert result % 10 == 0, f"Converted amount {result} is not cent-aligned"
 
 
 def test_build_prepared_conversion_skips_legacy_marked_transactions() -> None:

@@ -13,7 +13,7 @@ It is designed for a local, privacy-friendly workflow:
 
 - Discovers visible YNAB budgets and open accounts.
 - Converts enabled foreign-currency accounts into the configured base currency.
-- Works at milliunit precision, not cent precision.
+- Rounds the uploaded base-currency amount to the nearest cent so YNAB's displayed account balance equals the sum of stored transaction amounts.
 - Appends a deterministic FX memo marker like `[FX] -123.45 HKD (rate: 7.8 HKD/USD)` (the `rate:` value is rounded to three decimal places for the memo; conversion still uses your full configured rate).
 - Dry-runs by default and only writes when you pass `--apply`.
 - Stores YNAB `server_knowledge` locally after successful apply runs.
@@ -225,8 +225,8 @@ Dry runs do not save state. Successful `--apply` runs do save state.
 
 ## Conversion Behavior
 
-- Conversion uses YNAB milliunits and rounds to the nearest milliunit.
-- Example: `12340` means `12.34`. With `7.8 HKD/USD`, YMCA uploads `1582`, not `1580`.
+- Conversion uses YNAB milliunits and rounds the uploaded base-currency amount to the nearest **cent** (10 milliunits) so YNAB's displayed account balance equals the sum of stored transaction amounts.
+- Example: `12340` means `12.34`. With `7.8 HKD/USD`, YMCA uploads `1580` (the nearest cent), not `1582` (the nearest milliunit). The memo still records the source amount `12.34 HKD` at full precision.
 - The current FX marker format is `[FX] -123.45 HKD (rate: 7.8 HKD/USD)`.
 - The `rate:` in that marker is shown with up to three decimal places (half up), then trailing fractional zeros are dropped when possible; uploads still use the full-precision rate from config.
 - Existing memos keep their text and get the FX marker appended at the end.
