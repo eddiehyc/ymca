@@ -237,10 +237,19 @@ class InMemoryGateway:
         since_date: date | None,
         last_knowledge_of_server: int | None,
     ) -> bool:
-        if since_date is not None:
-            return transaction.date >= since_date
-        if last_knowledge_of_server is not None:
-            return transaction.modified_knowledge > last_knowledge_of_server
+        """Mirror the live API: date and knowledge filters combine (AND).
+
+        The real endpoint applies ``since_date`` and
+        ``last_knowledge_of_server`` together; knowledge deltas are not
+        bypassed by also passing a date floor (see docs/edge-cases.md E32).
+        """
+        if since_date is not None and transaction.date < since_date:
+            return False
+        if (
+            last_knowledge_of_server is not None
+            and transaction.modified_knowledge <= last_knowledge_of_server
+        ):
+            return False
         return True
 
     def _remote_accounts(self) -> tuple[RemoteAccount, ...]:

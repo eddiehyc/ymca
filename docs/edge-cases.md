@@ -256,3 +256,17 @@ Transfer pairs share one YNAB memo, but local-currency tracking needs to know wh
 The deprecated `migrate_legacy_fx_memos.py` helper cannot safely migrate split transfer parents through the YNAB API. Even a memo-only update on that row shape is not reliably supported, so those transactions remain manual-only in the YNAB web UI.
 
 - Historical local-only coverage still exists in [`tests/unit/test_migrate_legacy_fx_memos.py`](../tests/unit/test_migrate_legacy_fx_memos.py) and [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py), but those fakes do not prove live YNAB API support for this row shape.
+
+### E32. YNAB windows transaction fetches to ~12 months when `since_date` is omitted
+
+YNAB's transactions endpoints (`GET .../accounts/{id}/transactions` and the budget-wide variant) silently limit results to roughly the trailing 12 months when no `since_date` is passed. Crucially, supplying `last_knowledge_of_server` does **not** bypass the window: a knowledge-only delta omits changed rows whose *date* is older than the window, and a `since_date`-less "full scan" omits old rows entirely.
+
+Observed consequences before the fix:
+
+- `--rebuild-balance` full scans silently dropped every row older than 12 months, undercounting the tracked balance by exactly the sum of the aged-out cleared rows (discovered live: a rebuild missed an account's first two months — including its Starting Balance — once the account crossed the 12-month mark, while the drift check correctly compared against YNAB's full-history `cleared_balance` header).
+- Delta runs could never see edits (e.g. un-clearing) made to rows older than the window, so the memo ledger would drift silently.
+
+Fix: every transactions fetch sends an explicit `since_date`. When no user-facing date applies, `FULL_HISTORY_SINCE_DATE` (`2000-01-01`, defined in `ymca.conversion`) is sent as a floor; a fixed floor is used instead of the plan's `first_month` because YNAB allows transactions backdated before plan creation. A user-provided `--bootstrap-since` date still takes precedence. The integration cleanup sweep passes the same floor so backdated seed rows cannot survive the plan wipe.
+
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_delta_fetch_carries_since_date_floor`, `test_build_prepared_conversion_rebuild_balance_full_scans_only_tracked_accounts` (floor on full scans), `test_execute_conversion_saves_follow_up_server_knowledge` (floor on the post-write knowledge refresh).
+- Integration: [`tests/integration/test_sync_full_history_window.py`](../tests/integration/test_sync_full_history_window.py) — seeds a cleared row backdated ~14 months and asserts a rebuild full scan against the live API still fetches, converts, and counts it.

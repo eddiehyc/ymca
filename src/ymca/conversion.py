@@ -54,6 +54,19 @@ the *exponent* of its argument, so ``Decimal("10")`` (exponent 0) would round
 to the nearest integer, not to the nearest ten.
 """
 
+FULL_HISTORY_SINCE_DATE = date(2000, 1, 1)
+"""Explicit ``since_date`` floor sent with every transactions fetch.
+
+YNAB's transactions endpoints silently limit results to roughly the trailing
+12 months when ``since_date`` is omitted -- even when
+``last_knowledge_of_server`` is supplied. Without the floor, rebuild full
+scans drop rows older than the window (undercounting the tracked balance)
+and delta runs never see edits to older rows. Passing an explicit early
+date disables the window; a fixed floor is used instead of the plan's
+``first_month`` because YNAB allows transactions backdated before plan
+creation. See ``docs/edge-cases.md`` E32.
+"""
+
 
 class YnabGateway(Protocol):
     def list_plans(self, *, include_accounts: bool = False) -> tuple[RemotePlan, ...]: ...
@@ -686,7 +699,11 @@ def _fetch_transactions_for_accounts(
         snapshot = gateway.list_transactions_by_account(
             bindings.plan_id,
             bindings.account_ids[account.alias],
-            since_date=request.since_date,
+            since_date=(
+                request.since_date
+                if request.since_date is not None
+                else FULL_HISTORY_SINCE_DATE
+            ),
             last_knowledge_of_server=request.last_knowledge_of_server,
         )
         fetched_transactions += len(snapshot.transactions)
@@ -786,6 +803,7 @@ def _refresh_server_knowledge_for_accounts(
         snapshot = gateway.list_transactions_by_account(
             plan_id,
             account_id,
+            since_date=FULL_HISTORY_SINCE_DATE,
             last_knowledge_of_server=last_knowledge_of_server,
         )
         refreshed_knowledge = max(refreshed_knowledge, snapshot.server_knowledge)

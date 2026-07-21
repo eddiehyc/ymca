@@ -30,6 +30,7 @@ from typing import Any, Protocol, TypeVar, cast
 import ynab
 from ynab.rest import ApiException  # type: ignore[attr-defined]
 
+from ymca.conversion import FULL_HISTORY_SINCE_DATE
 from ymca.errors import ApiError
 from ymca.models import (
     AccountConfig,
@@ -231,8 +232,16 @@ class CountingYnabClient:
 
         Used by the cleanup harness and the integration tests themselves. A
         single call replaces N per-account calls plus detail lookups.
+
+        The explicit ``since_date`` floor matters: without it YNAB windows
+        the response to roughly the trailing 12 months (edge case E32), and
+        backdated seed rows would silently survive the plan wipe.
         """
-        response = self._invoke(lambda: self._transactions_api.get_transactions(plan_id))
+        response = self._invoke(
+            lambda: self._transactions_api.get_transactions(
+                plan_id, since_date=FULL_HISTORY_SINCE_DATE
+            )
+        )
         return list(response.data.transactions)
 
     def get_transfer_payee_id(self, plan_id: str, target_account_id: str) -> str | None:

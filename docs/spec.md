@@ -189,6 +189,7 @@ It stores:
 - Dry runs do not persist state.
 - Successful apply runs persist refreshed `server_knowledge`.
 - If writes were performed, YMCA performs a follow-up delta fetch and saves the post-write `server_knowledge`.
+- **Every transactions fetch carries an explicit `since_date`.** YNAB's transactions endpoints silently window results to roughly the trailing 12 months when `since_date` is omitted — even when `last_knowledge_of_server` is supplied. When no user-facing date applies (delta runs, rebuild full scans, the post-write knowledge refresh), YMCA sends the fixed floor `FULL_HISTORY_SINCE_DATE` (`2000-01-01`) to disable the window; a `--bootstrap-since` date always wins when provided. Without the floor, rebuild would drop rows older than the window and delta runs would never surface edits to old rows (edge case E32 in `docs/edge-cases.md`).
 
 ## 7. Conversion Semantics
 
@@ -429,7 +430,7 @@ Because the counted state is recorded in the memo itself, the engine correctly h
 
 `ymca sync --rebuild-balance` switches all selected tracked accounts into full-scan mode:
 
-- Saved `server_knowledge` is not consulted. The run fetches every active transaction in each tracked account since the earliest available date.
+- Saved `server_knowledge` is not consulted. The run fetches every active transaction in each tracked account since the earliest available date, sending `since_date=FULL_HISTORY_SINCE_DATE` explicitly so YNAB's default 12-month window cannot truncate the scan (§6, edge case E32).
 - Each account's running balance is recomputed from scratch:
   - Every non-sentinel, non-deleted, non-split transaction that is `cleared` or `reconciled` **and** carries either the current `[FX]` marker or the legacy `(FX rate: ...)` marker contributes its parsed local-currency amount to the new balance.
   - Unmarked transactions encountered during rebuild are FX-converted by the normal rules; their contribution to the balance follows §12.4.

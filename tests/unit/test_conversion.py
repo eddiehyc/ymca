@@ -6,7 +6,12 @@ from decimal import Decimal
 import pytest
 
 from tests.fakes import FakeGateway
-from ymca.conversion import build_prepared_conversion, execute_conversion, resolve_bindings
+from ymca.conversion import (
+    FULL_HISTORY_SINCE_DATE,
+    build_prepared_conversion,
+    execute_conversion,
+    resolve_bindings,
+)
 from ymca.errors import ApiError, ConfigError, UnsupportedOperationError, UserInputError
 from ymca.models import (
     AccountConfig,
@@ -270,6 +275,64 @@ def test_build_prepared_conversion_bootstrap_since_overrides_saved_server_knowle
     ]
 
 
+def test_build_prepared_conversion_delta_fetch_carries_since_date_floor() -> None:
+    """Delta fetches pass the full-history since_date floor with the knowledge.
+
+    YNAB silently windows results to the trailing ~12 months whenever
+    ``since_date`` is omitted, even alongside ``last_knowledge_of_server``
+    (edge case E32). Every fetch must therefore carry the explicit floor.
+    """
+    plan = PlanConfig(
+        alias="personal",
+        name="Example Plan",
+        base_currency="USD",
+        accounts=(
+            AccountConfig(alias="travel_hkd", name="Travel HKD", currency="HKD", enabled=True),
+        ),
+        fx_rates={"HKD": FxRule(rate=Decimal("7.8"), rate_text="7.8", divide_to_base=True)},
+    )
+    state = AppState(
+        version=1,
+        plans={
+            "personal": PlanState(
+                plan_id="plan-1",
+                account_ids={"travel_hkd": "acct-1"},
+                server_knowledge=12,
+            )
+        },
+    )
+    gateway = FakeGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=12,
+            )
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-1": [TransactionSnapshot(transactions=(), server_knowledge=44)]
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=state,
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=None,
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    # The SyncRequest keeps since_date=None (delta semantics for state and
+    # display); the floor is applied at fetch time only.
+    assert prepared.sync_request.last_knowledge_of_server == 12
+    assert prepared.sync_request.since_date is None
+    assert gateway.list_transactions_by_account_calls == [
+        ("plan-1", "acct-1", FULL_HISTORY_SINCE_DATE, 12),
+    ]
+
+
 def test_execute_conversion_saves_follow_up_server_knowledge() -> None:
     plan = PlanConfig(
         alias="personal",
@@ -350,6 +413,11 @@ def test_execute_conversion_saves_follow_up_server_knowledge() -> None:
     assert outcome.new_state.plans["personal"].plan_id == "plan-1"
     assert outcome.new_state.plans["personal"].account_ids["travel_hkd"] == "acct-1"
     assert outcome.new_state.plans["personal"].server_knowledge == 55
+    # The post-write knowledge refresh also carries the since_date floor.
+    assert gateway.list_transactions_by_account_calls == [
+        ("plan-1", "acct-1", date(2026, 4, 1), None),
+        ("plan-1", "acct-1", FULL_HISTORY_SINCE_DATE, 44),
+    ]
 
 
 def test_execute_conversion_batches_writes_per_account() -> None:
@@ -1604,8 +1672,8 @@ def test_build_prepared_conversion_rebuild_balance_full_scans_only_tracked_accou
 
     assert prepared.rebuild_balance is True
     assert gateway.list_transactions_by_account_calls == [
-        ("plan-1", "acct-hkd", None, None),
-        ("plan-1", "acct-gbp", None, 7),
+        ("plan-1", "acct-hkd", FULL_HISTORY_SINCE_DATE, None),
+        ("plan-1", "acct-gbp", FULL_HISTORY_SINCE_DATE, 7),
     ]
 
 
