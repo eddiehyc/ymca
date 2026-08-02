@@ -416,7 +416,9 @@ def test_ynab_client_get_transaction_detail_wraps_exception(
     )
     with YnabClient("secret") as client, pytest.raises(ApiError) as exc:
         client.get_transaction_detail("p1", "t1")
-    assert "get transaction detail" in str(exc.value)
+    message = str(exc.value)
+    assert "get transaction detail" in message
+    assert "transaction_id=t1" in message
 
 
 def test_ynab_client_update_transaction_sends_put_payload(
@@ -731,6 +733,17 @@ def test_format_api_exception_handles_minimal_exc() -> None:
     assert "Failed to do stuff" in message
     assert "status=400" in message
     assert "reason=Bad" in message
+
+
+def test_format_api_exception_includes_transaction_id() -> None:
+    fake = _FakeApiException(status=404, reason="Not Found", body="{}")
+    message = _format_api_exception(
+        "get transaction detail",
+        cast(ApiException, fake),
+        transaction_id="txn-abc",
+    )
+    assert "transaction_id=txn-abc" in message
+    assert "status=404" in message
 
 
 def test_map_cleared_normalizes_enum_values() -> None:

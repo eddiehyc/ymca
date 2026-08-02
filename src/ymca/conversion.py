@@ -257,7 +257,20 @@ def build_prepared_conversion(
     skipped.extend(transfer_skips)
 
     for account, transaction in deduped_items:
-        detail = gateway.get_transaction_detail(bindings.plan_id, transaction.id)
+        try:
+            detail = gateway.get_transaction_detail(bindings.plan_id, transaction.id)
+        except ApiError as exc:
+            if _is_not_found_api_error(exc):
+                skipped.append(
+                    SkippedTransaction(
+                        transaction_id=transaction.id,
+                        date=transaction.date,
+                        account_alias=account.alias,
+                        reason="missing",
+                    )
+                )
+                continue
+            raise
         detail_skip_reason = _detail_skip_reason(detail)
         if detail_skip_reason is not None:
             skipped.append(

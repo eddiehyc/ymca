@@ -107,7 +107,11 @@ class YnabClient:
             response = transactions_api.get_transaction_by_id(plan_id, transaction_id)
         except ApiException as exc:
             raise ApiError(
-                _format_api_exception("get transaction detail", exc),
+                _format_api_exception(
+                    "get transaction detail",
+                    exc,
+                    transaction_id=transaction_id,
+                ),
                 status=_api_exception_status(exc),
             ) from exc
 
@@ -364,11 +368,18 @@ def _require_date(value: Any, field_name: str) -> date:
     return value
 
 
-def _format_api_exception(action: str, exc: ApiException) -> str:
+def _format_api_exception(
+    action: str,
+    exc: ApiException,
+    *,
+    transaction_id: str | None = None,
+) -> str:
     status = getattr(exc, "status", None)
     reason = getattr(exc, "reason", None)
     body = getattr(exc, "body", None)
     details = [f"Failed to {action} via YNAB API."]
+    if transaction_id is not None:
+        details.append(f"transaction_id={transaction_id}")
     if status is not None:
         details.append(f"status={status}")
     if reason:

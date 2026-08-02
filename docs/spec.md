@@ -204,6 +204,7 @@ It stores:
 The main CLI skips:
 
 - deleted transactions
+- missing transactions (list/delta surfaced an id that `get_transaction_by_id` returns as YNAB `404.2 resource_not_found`)
 - split transactions
 - transactions already containing the current `[FX]` marker
 - transactions containing the legacy `(... FX rate: ...)` marker

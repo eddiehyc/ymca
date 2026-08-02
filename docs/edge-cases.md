@@ -270,3 +270,12 @@ Fix: every transactions fetch sends an explicit `since_date`. When no user-facin
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_delta_fetch_carries_since_date_floor`, `test_build_prepared_conversion_rebuild_balance_full_scans_only_tracked_accounts` (floor on full scans), `test_execute_conversion_saves_follow_up_server_knowledge` (floor on the post-write knowledge refresh).
 - Integration: [`tests/integration/test_sync_full_history_window.py`](../tests/integration/test_sync_full_history_window.py) — seeds a cleared row backdated ~14 months and asserts a rebuild full scan against the live API still fetches, converts, and counts it.
+
+### E33. Transaction detail 404 after list/delta surfaces the id
+
+YNAB account transaction lists (including knowledge deltas) can return a transaction id that a subsequent `GET .../transactions/{id}` rejects with `404.2 resource_not_found`. Soft-deleted rows normally arrive with `deleted: true` and are skipped earlier; this path covers hard-missing ids (or a race where the row vanishes between list and detail).
+
+Behavior: the FX candidate loop catches that 404, skips the row with reason `missing`, and continues preparing other candidates. Non-404 detail failures still abort. Adapter errors for `get_transaction_detail` include `transaction_id=` so remaining failures are diagnosable. Saved-sentinel and paired-transfer-leg 404s remain handled separately (recreate sentinel / treat pair as not counted).
+
+- Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_skips_missing_detail_404`, `test_build_prepared_conversion_reraises_non_404_detail_errors`; [`tests/unit/test_ynab_client.py`](../tests/unit/test_ynab_client.py) — `test_ynab_client_get_transaction_detail_wraps_exception`.
+- Integration: not forced live (requires a list/detail inconsistency the API does not expose for seeding).

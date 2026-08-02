@@ -922,6 +922,144 @@ def test_build_prepared_conversion_prompts_when_no_bootstrap_or_state() -> None:
     assert prepared.sync_request.last_knowledge_of_server is None
 
 
+def test_build_prepared_conversion_skips_missing_detail_404() -> None:
+    """List/delta can surface a row that get-by-id can no longer find."""
+    plan = _single_account_plan()
+
+    class _MissingDetailGateway(FakeGateway):
+        def get_transaction_detail(
+            self, plan_id: str, transaction_id: str
+        ) -> RemoteTransactionDetail:
+            if transaction_id == "txn-missing":
+                raise ApiError(
+                    "Failed to get transaction detail via YNAB API. "
+                    "transaction_id=txn-missing status=404",
+                    status=404,
+                )
+            return super().get_transaction_detail(plan_id, transaction_id)
+
+    gateway = _MissingDetailGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            ),
+        },
+        transaction_details={
+            "txn-ok": RemoteTransactionDetail(
+                id="txn-ok",
+                date=date(2026, 4, 12),
+                amount_milliunits=7800,
+                memo="Lunch",
+                account_id="acct-1",
+                transfer_account_id=None,
+                transfer_transaction_id=None,
+                deleted=False,
+                subtransaction_count=0,
+            ),
+        },
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-missing",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=1000,
+                            memo=None,
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                        ),
+                        RemoteTransaction(
+                            id="txn-ok",
+                            date=date(2026, 4, 12),
+                            amount_milliunits=7800,
+                            memo="Lunch",
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=42,
+                ),
+            ]
+        },
+    )
+
+    prepared = build_prepared_conversion(
+        plan=plan,
+        state=AppState(version=1, plans={}),
+        gateway=gateway,
+        selected_account_aliases=(),
+        bootstrap_since=date(2026, 4, 1),
+        prompt_for_start_date=lambda: date(2026, 4, 1),
+    )
+
+    reasons = {skip.transaction_id: skip.reason for skip in prepared.skipped}
+    assert reasons == {"txn-missing": "missing"}
+    assert len(prepared.updates) == 1
+    assert prepared.updates[0].request.transaction_id == "txn-ok"
+
+
+def test_build_prepared_conversion_reraises_non_404_detail_errors() -> None:
+    plan = _single_account_plan()
+
+    class _DetailErrorGateway(FakeGateway):
+        def get_transaction_detail(
+            self, plan_id: str, transaction_id: str
+        ) -> RemoteTransactionDetail:
+            del plan_id, transaction_id
+            raise ApiError(
+                "Failed to get transaction detail via YNAB API. "
+                "transaction_id=txn-1 status=500",
+                status=500,
+            )
+
+    gateway = _DetailErrorGateway(
+        plans=(RemotePlan(id="plan-1", name="Example Plan"),),
+        account_snapshots={
+            "plan-1": AccountSnapshot(
+                accounts=(RemoteAccount(id="acct-1", name="Travel HKD", deleted=False),),
+                server_knowledge=1,
+            ),
+        },
+        transaction_details={},
+        transaction_snapshots_by_account={
+            "acct-1": [
+                TransactionSnapshot(
+                    transactions=(
+                        RemoteTransaction(
+                            id="txn-1",
+                            date=date(2026, 4, 10),
+                            amount_milliunits=1000,
+                            memo=None,
+                            account_id="acct-1",
+                            transfer_account_id=None,
+                            transfer_transaction_id=None,
+                            deleted=False,
+                        ),
+                    ),
+                    server_knowledge=42,
+                ),
+            ]
+        },
+    )
+
+    with pytest.raises(ApiError, match="status=500"):
+        build_prepared_conversion(
+            plan=plan,
+            state=AppState(version=1, plans={}),
+            gateway=gateway,
+            selected_account_aliases=(),
+            bootstrap_since=date(2026, 4, 1),
+            prompt_for_start_date=lambda: date(2026, 4, 1),
+        )
+
+
 def test_build_prepared_conversion_skips_deleted_and_split_transactions() -> None:
     plan = _single_account_plan()
     gateway = FakeGateway(
