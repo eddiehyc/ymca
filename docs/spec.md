@@ -62,6 +62,7 @@ Closed and deleted accounts are not shown.
 - prompts for a bootstrap date if no local `server_knowledge` exists and no bootstrap date is supplied
 - saves refreshed `server_knowledge` after successful apply runs
 - if `--rebuild-balance` is supplied, switches tracked accounts into full-scan mode (see §12); mutually exclusive with `--bootstrap-since`
+- prints prepared updates, skipped rows, and local-currency tracking in aligned tables
 
 ## 4. Runtime Path Resolution
 
@@ -443,13 +444,23 @@ Because the counted state is recorded in the memo itself, the engine correctly h
 
 ### 12.6 Tolerance Check
 
-For each tracked account, at the end of every sync run, YMCA compares the running balance against YNAB's reported `cleared_balance` (which is in the base currency):
+For each tracked account, at the end of every sync run, YMCA compares the running balance against YNAB's `cleared_balance` (which is in the base currency):
 
+- Start from the reported `cleared_balance`, then **add this run's pending conversion delta** to get the balance YNAB will report once the run's writes land (see below).
 - Determine the **stronger currency**: the base currency when `divide_to_base: true`, the source currency when `divide_to_base: false`.
 - Convert both values to the stronger currency.
-- If `|tracked − cleared_balance| > 0.02` stronger-currency units, print a warning suggesting `ymca sync --rebuild-balance`.
+- If `|tracked − projected cleared_balance| > 0.02` stronger-currency units, print a warning suggesting `ymca sync --rebuild-balance`.
 
 The warning is informational only. The sync run does not fail.
+
+**Why the projection is needed.** `cleared_balance` comes from the account snapshot taken at the start of the run, before any FX write. A row the user entered as *cleared* is therefore still counted there at its source-currency amount, while the tracked balance already counts it as source currency awaiting conversion. Comparing directly would report that row's entire FX spread as drift on every sync that converts a cleared row (edge case E34).
+
+The pending conversion delta is the sum of `converted_amount − source_amount` over this run's prepared FX writes, subject to two rules:
+
+- Only **cleared or reconciled** rows count. Rewriting an uncleared row moves YNAB's `uncleared_balance`, not `cleared_balance`.
+- A transfer write lands on both legs with opposite signs, so the paired account absorbs the negated delta whenever its own leg is cleared as well.
+
+Both sides of the comparison are therefore post-run projections, which also makes a dry run's tolerance check agree with the apply run that follows it. The projection covers only rows this run converts; rows YMCA skips (`already-converted`, `split`, `legacy-marker`) never enter it, so the drift they cause — including the hand-edit drift in §12.8 — still surfaces.
 
 ### 12.7 Sign Inference Rules
 

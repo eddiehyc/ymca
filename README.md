@@ -278,6 +278,8 @@ Known limitation — editing a cleared, already-FX-converted row is **not** supp
 
 The tolerance check at the end of each run warns when the tracked balance drifts beyond `0.02` of the stronger currency versus YNAB's `cleared_balance`. Recovery is `ymca sync --rebuild-balance`.
 
+Because YNAB reports `cleared_balance` from before the run's writes, a row you entered as *cleared* is still counted there at its foreign-currency amount. The check therefore compares against the balance the run's own conversions will produce, so entering a cleared 78 HKD row in an account holding 780 HKD no longer reports the FX spread as drift.
+
 Rebuild mode (`ymca sync --rebuild-balance`):
 
 - Ignores saved `server_knowledge`; fetches every active transaction in each tracked account in scope.

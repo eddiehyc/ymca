@@ -277,6 +277,19 @@ class PreparedTrackingUpdate:
     """Pending ``[FX]`` \u2194 ``[FX+]`` marker rewrites (and legacy \u2192 current
     migrations) for transactions whose counted state changed this run. Applied
     before the sentinel upsert via a batched ``update_transactions`` call."""
+    pending_conversion_delta_milliunits: int = 0
+    """Net base-currency change this run's FX writes will make to
+    ``ynab_cleared_balance_milliunits``.
+
+    YNAB reports ``cleared_balance`` from before the run's writes, so cleared
+    rows awaiting conversion are still counted at their source-currency
+    amount. The drift check adds this delta to get the post-write balance.
+    See ``docs/spec.md`` §12.6."""
+
+    @property
+    def projected_cleared_balance_milliunits(self) -> int:
+        """YNAB's ``cleared_balance`` as it will read after this run's writes."""
+        return self.ynab_cleared_balance_milliunits + self.pending_conversion_delta_milliunits
 
 
 @dataclass(frozen=True, slots=True)

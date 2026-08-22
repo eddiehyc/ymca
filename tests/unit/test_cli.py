@@ -12,7 +12,9 @@ from tests.fakes import FakeGateway, FakeGatewayContext
 from ymca.cli import (
     _parse_date_argument,
     _print_conversion_summary,
+    _print_table,
     _prompt_for_start_date,
+    _render_table,
     main,
 )
 from ymca.errors import ApiError
@@ -319,6 +321,30 @@ def test_print_conversion_summary_rejects_unexpected_outcome_type() -> None:
         _print_conversion_summary(object())
 
 
+def test_render_table_returns_empty_string_for_no_rows() -> None:
+    assert _render_table(("Date", "Amount"), ()) == ""
+
+
+def test_print_table_is_silent_when_there_are_no_rows(
+    capsys: CaptureFixture[str],
+) -> None:
+    _print_table(("Date", "Amount"), ())
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_render_table_aligns_numeric_columns_to_the_right() -> None:
+    rendered = _render_table(
+        ("Name", "Amount"),
+        (("hkd", "12.340 HKD"), ("usd", "1.582 USD")),
+        aligns=("left", "right"),
+    )
+
+    assert rendered.splitlines()[1] == "│ Name │     Amount │"
+    assert " 12.340 HKD " in rendered
+    assert "  1.582 USD " in rendered
+
+
 def _sample_plan() -> PlanConfig:
     from decimal import Decimal
 
@@ -401,9 +427,12 @@ def test_print_conversion_summary_renders_sync_and_skipped_details(
 
     assert "Mode: DRY RUN" in captured.out
     assert "Sync: last_knowledge_of_server=117506" in captured.out
-    assert "- 2026-04-10 travel_hkd: 12.340 HKD -> 1.582 USD" in captured.out
-    assert "- skipped 2026-04-11 travel_hkd: already-converted" in captured.out
-    assert "- skipped 2026-04-12 <unknown>: deleted" in captured.out
+    assert "Updates:" in captured.out
+    assert "12.340 HKD" in captured.out
+    assert "1.582 USD" in captured.out
+    assert "Skipped:" in captured.out
+    assert "already-converted" in captured.out
+    assert "<unknown>" in captured.out
 
 
 def test_sync_argument_parser_rejects_old_convert_command() -> None:
@@ -545,8 +574,9 @@ def test_sync_summary_prints_tracking_block_and_within_tolerance(
     captured = capsys.readouterr()
 
     assert "Local currency tracking:" in captured.out
-    assert "travel_hkd (HKD)" in captured.out
-    assert "within tolerance" in captured.out
+    assert "travel_hkd" in captured.out
+    assert "HKD" in captured.out
+    assert "(ok)" in captured.out
     assert "Sentinel writes: 1 (1 created)" in captured.out
 
 
@@ -575,8 +605,8 @@ def test_sync_summary_prints_contributions_and_ambiguous_transfers(
     from ymca.models import (
         AmbiguousTransfer,
         BalanceContribution,
-        NewTransactionRequest,
         PreparedTrackingUpdate,
+        TransactionUpdateRequest,
     )
 
     prepared = PreparedConversion(
@@ -623,15 +653,12 @@ def test_sync_summary_prints_contributions_and_ambiguous_transfers(
                 drift_milliunits_stronger=0,
                 within_tolerance=True,
                 rebuild=True,
-                create_sentinel=NewTransactionRequest(
-                    account_id="acct-1",
-                    date=date(2026, 4, 19),
+                create_sentinel=None,
+                update_sentinel=TransactionUpdateRequest(
+                    transaction_id="sentinel-1",
                     amount_milliunits=0,
                     memo="stub",
-                    payee_name="[YMCA] Tracked Balance",
-                    cleared="reconciled",
                 ),
-                update_sentinel=None,
             ),
         ),
         rebuild_balance=True,
@@ -647,8 +674,10 @@ def test_sync_summary_prints_contributions_and_ambiguous_transfers(
     _print_conversion_summary(outcome)
     captured = capsys.readouterr()
 
-    assert "contributions: 1 row(s)" in captured.out
-    assert "ambiguous 0-amount transfers (skipped): 1 row(s)" in captured.out
+    assert "Rows" in captured.out
+    assert "│ update " in captured.out
+    assert "Ambiguous 0-amount transfers (skipped):" in captured.out
+    assert "ambig" in captured.out
     assert "Sync: full scan (no since_date, no server_knowledge)" in captured.out
 
 
@@ -723,8 +752,9 @@ def test_sync_summary_omits_sentinel_action_when_tracking_entry_is_noop(
     _print_conversion_summary(outcome)
     captured = capsys.readouterr()
 
-    assert "travel_hkd (HKD): 123.40 -> 123.40 (delta 0.00)" in captured.out
-    assert "sentinel:" not in captured.out
+    assert "123.40" in captured.out
+    assert "create" not in captured.out
+    assert "│ update " not in captured.out
 
 
 def test_sync_summary_warns_on_drift_beyond_tolerance(

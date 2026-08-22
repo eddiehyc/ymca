@@ -336,6 +336,148 @@ def test_local_currency_tracking_lifecycle_workflow(
     assert len(gateway.updates) == writes_before_quiet_run
 
 
+def test_new_cleared_transaction_does_not_report_drift_workflow(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """A cleared row entered since the last sync must not trip the tolerance check.
+
+    YNAB reports ``cleared_balance`` before this run's FX writes land, so the
+    new row is still counted at its pre-conversion source amount. Comparing the
+    tracked balance against that raw figure reports the whole FX spread as
+    drift (see docs/edge-cases.md E34).
+    """
+    config_path = tmp_path / "config.yaml"
+    state_path = tmp_path / "state.yaml"
+    _write_config(config_path, track_local_balance=True)
+    gateway = InMemoryGateway(
+        plan_id="plan-1",
+        plan_name="Example Plan",
+        accounts=(SimulatedAccount(id="acct-hkd", name="Travel HKD"),),
+        transactions=(
+            SimulatedTransaction(
+                id="txn-seed",
+                date=date(2026, 4, 10),
+                amount_milliunits=780000,
+                memo="Seed",
+                account_id="acct-hkd",
+                payee_name="Seed",
+                cleared="cleared",
+            ),
+        ),
+    )
+    _patch_cli_gateway(
+        monkeypatch,
+        gateway=gateway,
+        config_path=config_path,
+        state_path=state_path,
+    )
+
+    seed_exit = main(["sync", "--apply", "--bootstrap-since", "2026-04-01"])
+    seed_output = capsys.readouterr()
+
+    assert seed_exit == 0
+    assert "DRIFT" not in seed_output.out
+    assert gateway.detail("txn-seed").amount_milliunits == 100000
+    assert "780.00 HKD [YMCA-BAL]" in (
+        gateway.find_active_transaction_by_payee(
+            SENTINEL_PAYEE_NAME, account_id="acct-hkd"
+        ).memo
+        or ""
+    )
+
+    gateway.add_transaction(
+        SimulatedTransaction(
+            id="txn-new",
+            date=date(2026, 4, 12),
+            amount_milliunits=78000,
+            memo="Entered as cleared",
+            account_id="acct-hkd",
+            payee_name="Entered as cleared",
+            cleared="cleared",
+        )
+    )
+
+    dry_run_exit = main(["sync"])
+    dry_run_output = capsys.readouterr()
+
+    assert dry_run_exit == 0
+    assert "Prepared updates: 1" in dry_run_output.out
+    assert "DRIFT" not in dry_run_output.out
+
+    apply_exit = main(["sync", "--apply"])
+    apply_output = capsys.readouterr()
+
+    assert apply_exit == 0
+    assert "DRIFT" not in apply_output.out
+    assert gateway.detail("txn-new").amount_milliunits == 10000
+    assert "858.00 HKD [YMCA-BAL]" in (
+        gateway.find_active_transaction_by_payee(
+            SENTINEL_PAYEE_NAME, account_id="acct-hkd"
+        ).memo
+        or ""
+    )
+
+    quiet_exit = main(["sync"])
+    quiet_output = capsys.readouterr()
+
+    assert quiet_exit == 0
+    assert "DRIFT" not in quiet_output.out
+
+
+def test_hand_edited_converted_row_still_reports_drift_workflow(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """Projecting pending conversions must not mask the §12.8 hand-edit drift.
+
+    An already-converted row keeps its ``already-converted`` skip, so it never
+    joins the pending-conversion projection and its edit still surfaces.
+    """
+    config_path = tmp_path / "config.yaml"
+    state_path = tmp_path / "state.yaml"
+    _write_config(config_path, track_local_balance=True)
+    gateway = InMemoryGateway(
+        plan_id="plan-1",
+        plan_name="Example Plan",
+        accounts=(SimulatedAccount(id="acct-hkd", name="Travel HKD"),),
+        transactions=(
+            SimulatedTransaction(
+                id="txn-seed",
+                date=date(2026, 4, 10),
+                amount_milliunits=780000,
+                memo="Seed",
+                account_id="acct-hkd",
+                payee_name="Seed",
+                cleared="cleared",
+            ),
+        ),
+    )
+    _patch_cli_gateway(
+        monkeypatch,
+        gateway=gateway,
+        config_path=config_path,
+        state_path=state_path,
+    )
+
+    seed_exit = main(["sync", "--apply", "--bootstrap-since", "2026-04-01"])
+    capsys.readouterr()
+
+    assert seed_exit == 0
+
+    gateway.set_amount("txn-seed", 500000)
+
+    drifted_exit = main(["sync"])
+    drifted_output = capsys.readouterr()
+
+    assert drifted_exit == 0
+    assert "Prepared updates: 0" in drifted_output.out
+    assert "DRIFT beyond 0.02" in drifted_output.out
+    assert "ymca sync --rebuild-balance" in drifted_output.out
+
+
 def test_transfer_tracking_partial_clear_workflow(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

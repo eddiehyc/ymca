@@ -276,6 +276,55 @@ def _build_transfer_direction_prompt(*, apply_updates: bool) -> TransferDirectio
     return prompt
 
 
+def _render_table(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[str]],
+    *,
+    aligns: Sequence[str] | None = None,
+) -> str:
+    if not rows:
+        return ""
+    align_list = list(aligns) if aligns is not None else ["left"] * len(headers)
+    widths = [len(header) for header in headers]
+    string_rows = [[str(cell) for cell in row] for row in rows]
+    for row in string_rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    def _pad(text: str, index: int) -> str:
+        padding = widths[index] - len(text)
+        if align_list[index] == "right":
+            return f"{' ' * padding}{text}"
+        return f"{text}{' ' * padding}"
+
+    def _rule(left: str, middle: str, right: str) -> str:
+        return left + middle.join("─" * (width + 2) for width in widths) + right
+
+    def _line(cells: Sequence[str]) -> str:
+        body = " │ ".join(_pad(cell, index) for index, cell in enumerate(cells))
+        return f"│ {body} │"
+
+    lines = [
+        _rule("┌", "┬", "┐"),
+        _line(headers),
+        _rule("├", "┼", "┤"),
+    ]
+    lines.extend(_line(row) for row in string_rows)
+    lines.append(_rule("└", "┴", "┘"))
+    return "\n".join(lines)
+
+
+def _print_table(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[str]],
+    *,
+    aligns: Sequence[str] | None = None,
+) -> None:
+    rendered = _render_table(headers, rows, aligns=aligns)
+    if rendered:
+        print(rendered)
+
+
 def _print_conversion_summary(outcome: object) -> None:
     from .models import ConversionOutcome
 
@@ -297,63 +346,115 @@ def _print_conversion_summary(outcome: object) -> None:
     print(f"Prepared updates: {len(prepared.updates)}")
     print(f"Skipped transactions: {len(prepared.skipped)}")
 
-    for update in prepared.updates:
-        source_amount = format_milliunits(update.source_amount_milliunits, places=3)
-        converted_amount = format_milliunits(update.converted_amount_milliunits, places=3)
-        print(
-            f"- {update.date.isoformat()} {update.account_alias}: "
-            f"{source_amount} {update.source_currency} -> "
-            f"{converted_amount} {update.converted_currency}"
+    if prepared.updates:
+        print("")
+        print("Updates:")
+        _print_table(
+            ("Date", "Account", "Xfer", "Source", "Converted", "Rate", "Memo"),
+            [
+                (
+                    update.date.isoformat(),
+                    update.account_alias,
+                    "yes" if update.is_transfer else "",
+                    f"{format_milliunits(update.source_amount_milliunits, places=3)} "
+                    f"{update.source_currency}",
+                    f"{format_milliunits(update.converted_amount_milliunits, places=3)} "
+                    f"{update.converted_currency}",
+                    update.rate_text,
+                    update.new_memo,
+                )
+                for update in prepared.updates
+            ],
+            aligns=("left", "left", "left", "right", "right", "right", "left"),
         )
-        print(f"  memo: {update.new_memo}")
 
     if prepared.skipped:
-        for skipped in prepared.skipped:
-            account_text = skipped.account_alias or "<unknown>"
-            print(f"- skipped {skipped.date.isoformat()} {account_text}: {skipped.reason}")
+        print("")
+        print("Skipped:")
+        _print_table(
+            ("Date", "Account", "Reason"),
+            [
+                (
+                    skipped.date.isoformat(),
+                    skipped.account_alias or "<unknown>",
+                    skipped.reason,
+                )
+                for skipped in prepared.skipped
+            ],
+        )
 
     if prepared.tracking:
         print("")
         print("Local currency tracking:")
+        tracking_rows: list[tuple[str, str, str, str, str, str, str, str]] = []
+        drift_warnings: list[str] = []
+        ambiguous_rows: list[tuple[str, str, str, str]] = []
         for entry in prepared.tracking:
             prior_text = format_balance_milliunits(entry.prior_balance_milliunits)
             new_text = format_balance_milliunits(entry.new_balance_milliunits)
-            delta = entry.new_balance_milliunits - entry.prior_balance_milliunits
-            delta_text = format_balance_milliunits(delta)
-            sentinel_suffix = ""
-            if entry.create_sentinel is not None:
-                sentinel_suffix = "; sentinel: create"
-            elif entry.update_sentinel is not None:
-                sentinel_suffix = "; sentinel: update"
-            print(
-                f"- {entry.account_alias} ({entry.currency}): "
-                f"{prior_text} -> {new_text} (delta {delta_text})"
-                f"{sentinel_suffix}"
+            delta_text = format_balance_milliunits(
+                entry.new_balance_milliunits - entry.prior_balance_milliunits
             )
-            if entry.contributions:
-                print(f"  contributions: {len(entry.contributions)} row(s)")
-            if entry.ambiguous_transfers:
-                print(
-                    f"  ambiguous 0-amount transfers (skipped): "
-                    f"{len(entry.ambiguous_transfers)} row(s)"
-                )
-                for ambiguous in entry.ambiguous_transfers:
-                    print(
-                        f"    - {ambiguous.date.isoformat()} {ambiguous.transaction_id} "
-                        f"({ambiguous.currency})"
-                    )
+            if entry.create_sentinel is not None:
+                sentinel_text = "create"
+            elif entry.update_sentinel is not None:
+                sentinel_text = "update"
+            else:
+                sentinel_text = ""
             drift_text = format_balance_milliunits(entry.drift_milliunits_stronger)
             if entry.within_tolerance:
-                print(
-                    f"  drift check: {drift_text} {entry.stronger_currency} "
-                    "(within tolerance)"
-                )
+                drift_status = "ok"
             else:
-                print(
-                    f"  drift check: {drift_text} {entry.stronger_currency} "
+                drift_status = "DRIFT"
+                drift_warnings.append(
+                    f"{entry.account_alias}: {drift_text} {entry.stronger_currency} "
                     f"(DRIFT beyond {DISPLAY_TOLERANCE_STRONGER_UNITS}; "
                     "run `ymca sync --rebuild-balance` to recover)"
                 )
+            tracking_rows.append(
+                (
+                    entry.account_alias,
+                    entry.currency,
+                    prior_text,
+                    new_text,
+                    delta_text,
+                    sentinel_text,
+                    str(len(entry.contributions)),
+                    f"{drift_text} {entry.stronger_currency} ({drift_status})",
+                )
+            )
+            for ambiguous in entry.ambiguous_transfers:
+                ambiguous_rows.append(
+                    (
+                        ambiguous.date.isoformat(),
+                        ambiguous.account_alias,
+                        ambiguous.transaction_id,
+                        ambiguous.currency,
+                    )
+                )
+        _print_table(
+            (
+                "Account",
+                "Currency",
+                "Prior",
+                "New",
+                "Delta",
+                "Sentinel",
+                "Rows",
+                "Drift",
+            ),
+            tracking_rows,
+            aligns=("left", "left", "right", "right", "right", "left", "right", "left"),
+        )
+        if ambiguous_rows:
+            print("")
+            print("Ambiguous 0-amount transfers (skipped):")
+            _print_table(
+                ("Date", "Account", "Transaction", "Currency"),
+                ambiguous_rows,
+            )
+        for warning in drift_warnings:
+            print(warning)
 
     if outcome.applied:
         print(f"Writes applied: {outcome.writes_performed}")

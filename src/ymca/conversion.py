@@ -256,6 +256,11 @@ def build_prepared_conversion(
     deduped_items, transfer_skips = _dedupe_transfer_transactions(candidate_items)
     skipped.extend(transfer_skips)
 
+    pending_conversion_deltas: dict[str, int] = defaultdict(int)
+    alias_by_account_id = {
+        resolved_id: alias for alias, resolved_id in bindings.account_ids.items()
+    }
+
     for account, transaction in deduped_items:
         try:
             detail = gateway.get_transaction_detail(bindings.plan_id, transaction.id)
@@ -283,13 +288,20 @@ def build_prepared_conversion(
             )
             continue
 
-        updates.append(
-            _prepare_update(
-                plan,
-                account,
-                detail,
-                paired_transfer_counted=transaction.paired_transfer_counted,
-            )
+        update = _prepare_update(
+            plan,
+            account,
+            detail,
+            paired_transfer_counted=transaction.paired_transfer_counted,
+        )
+        updates.append(update)
+        _accumulate_pending_conversion_delta(
+            deltas=pending_conversion_deltas,
+            alias_by_account_id=alias_by_account_id,
+            account=account,
+            detail=detail,
+            update=update,
+            paired_transfer_counted=transaction.paired_transfer_counted,
         )
 
     split_skipped_ids = {
@@ -306,6 +318,7 @@ def build_prepared_conversion(
         prompt_for_transfer_direction=prompt_for_transfer_direction,
         gateway=gateway,
         saved_sentinel_ids=saved_sentinel_ids,
+        pending_conversion_deltas=pending_conversion_deltas,
     )
 
     return PreparedConversion(
@@ -395,6 +408,7 @@ def _build_tracking_updates(
     prompt_for_transfer_direction: TransferDirectionPrompt | None,
     gateway: YnabGateway,
     saved_sentinel_ids: Mapping[str, str],
+    pending_conversion_deltas: Mapping[str, int],
 ) -> tuple[PreparedTrackingUpdate, ...]:
     tracked_accounts = [a for a in selected_accounts if a.track_local_balance]
     if not tracked_accounts:
@@ -438,6 +452,9 @@ def _build_tracking_updates(
                 rebuild=rebuild,
                 now_utc=now_utc,
                 prompt_for_transfer_direction=prompt_for_transfer_direction,
+                pending_conversion_delta_milliunits=pending_conversion_deltas.get(
+                    account.alias, 0
+                ),
             )
         )
         _raise_if_split_transfer_memo_flip_is_unsupported(
@@ -447,6 +464,35 @@ def _build_tracking_updates(
             tracking_update=prepared[-1],
         )
     return tuple(prepared)
+
+
+def _accumulate_pending_conversion_delta(
+    *,
+    deltas: dict[str, int],
+    alias_by_account_id: Mapping[str, str],
+    account: AccountConfig,
+    detail: RemoteTransactionDetail,
+    update: PreparedUpdate,
+    paired_transfer_counted: bool | None,
+) -> None:
+    """Record how one pending FX write will move accounts' cleared balances.
+
+    Only cleared/reconciled rows sit in YNAB's ``cleared_balance``; rewriting
+    an uncleared row moves ``uncleared_balance`` instead and must not shift the
+    drift baseline. A transfer write lands on both legs with opposite signs, so
+    the paired account absorbs the negated delta whenever its own leg is
+    cleared as well.
+    """
+    delta = update.converted_amount_milliunits - update.source_amount_milliunits
+    if delta == 0:
+        return
+    if _should_count_remote_detail(detail):
+        deltas[account.alias] += delta
+    if not paired_transfer_counted or detail.transfer_account_id is None:
+        return
+    paired_alias = alias_by_account_id.get(detail.transfer_account_id)
+    if paired_alias is not None:
+        deltas[paired_alias] -= delta
 
 
 def _fetch_saved_sentinel(

@@ -1043,6 +1043,85 @@ def test_build_tracking_update_flags_drift_beyond_tolerance() -> None:
     assert result.drift_milliunits_stronger < -TOLERANCE_STRONGER_MILLIUNITS
 
 
+def _tracked_at_780_hkd() -> RemoteTransaction:
+    """Prior sentinel for an account already holding 780.00 HKD (= 100.00 USD)."""
+    return _txn(
+        txn_id="sentinel",
+        amount_milliunits=0,
+        memo=build_sentinel_memo(currency="HKD", balance_milliunits=780000),
+        payee_name=SENTINEL_PAYEE_NAME,
+        cleared="reconciled",
+    )
+
+
+def test_pending_conversion_delta_rebases_the_drift_check() -> None:
+    # E34: a cleared 78 HKD row entered since the last sync is still counted in
+    # ``cleared_balance`` at its raw amount (100 USD held + 78 raw = 178).
+    # Converting it drops the account to 110 USD, which is exactly what the
+    # resulting 858 HKD tracked balance is worth, so this run must not drift.
+    plan = _plan()
+    new_cleared_row = _txn(txn_id="t1", amount_milliunits=78000, cleared="cleared")
+    transactions = [_tracked_at_780_hkd(), new_cleared_row]
+
+    unadjusted = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(cleared_balance_milliunits=178000),
+        transactions=transactions,
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+    )
+
+    assert unadjusted.within_tolerance is False
+    assert unadjusted.drift_milliunits_stronger == -68000
+
+    adjusted = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(cleared_balance_milliunits=178000),
+        transactions=transactions,
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+        pending_conversion_delta_milliunits=10000 - 78000,
+    )
+
+    assert adjusted.new_balance_milliunits == 858000
+    assert adjusted.ynab_cleared_balance_milliunits == 178000
+    assert adjusted.projected_cleared_balance_milliunits == 110000
+    assert adjusted.drift_milliunits_stronger == 0
+    assert adjusted.within_tolerance is True
+
+
+def test_pending_conversion_delta_does_not_mask_unrelated_drift() -> None:
+    # The projection only cancels the FX spread of rows this run converts. An
+    # unrelated 1.00 USD gap in the same account still trips the check.
+    plan = _plan()
+    new_cleared_row = _txn(txn_id="t1", amount_milliunits=78000, cleared="cleared")
+
+    result = build_tracking_update(
+        plan=plan,
+        account=plan.accounts[0],
+        account_id="acct-hkd",
+        remote_account=_hkd_account(cleared_balance_milliunits=179000),
+        transactions=[_tracked_at_780_hkd(), new_cleared_row],
+        split_skipped_ids=set(),
+        rebuild=False,
+        now_utc=_NOW,
+        prompt_for_transfer_direction=None,
+        pending_conversion_delta_milliunits=10000 - 78000,
+    )
+
+    assert result.projected_cleared_balance_milliunits == 111000
+    assert result.drift_milliunits_stronger == -1000
+    assert result.within_tolerance is False
+
+
 @pytest.mark.parametrize(
     ("direction_return", "expected_signed"),
     [(1, 1000), (-1, -1000), (None, 0), (0, 0)],

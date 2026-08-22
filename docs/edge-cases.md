@@ -279,3 +279,17 @@ Behavior: the FX candidate loop catches that 404, skips the row with reason `mis
 
 - Unit: [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_skips_missing_detail_404`, `test_build_prepared_conversion_reraises_non_404_detail_errors`; [`tests/unit/test_ynab_client.py`](../tests/unit/test_ynab_client.py) — `test_ynab_client_get_transaction_detail_wraps_exception`.
 - Integration: not forced live (requires a list/detail inconsistency the API does not expose for seeding).
+
+### E34. Row entered as cleared drifts against the pre-conversion `cleared_balance`
+
+`cleared_balance` is read from the account snapshot at the start of the run, before any FX write lands. A row the user entered as *cleared* is therefore still counted there at its **source-currency** amount, while the tracked balance already counts it as source currency destined for conversion. Comparing the two directly reports the entire FX spread of that row as drift.
+
+Observed: an HKD account holding 780.00 HKD (100.00 USD in YNAB) plus a newly entered cleared 78 HKD row was reported as `-68.00 USD (DRIFT)` and told the user to run `ymca sync --rebuild-balance`. Nothing was wrong: the run's own write brings the account to 110.00 USD, matching the 858.00 HKD tracked balance. Re-running the sync after the apply reported no drift, so the warning was a one-run artifact of comparing a post-write figure against a pre-write one.
+
+Fix: the tolerance check rebases onto the balance YNAB will report *after* this run's writes (`docs/spec.md` §12.6). Only cleared/reconciled rows join the projection — rewriting an uncleared row moves `uncleared_balance`, not `cleared_balance` — and a transfer write is mirrored onto the paired account with the opposite sign when that leg is cleared too.
+
+This does not weaken the check. The projection cancels exactly the FX spread of rows this run converts, and never touches rows YMCA skips, so E25's hand-edit drift (`already-converted`, so never converted again), split rows, and legacy-marker rows all still surface.
+
+- Unit: [`tests/unit/test_balance.py`](../tests/unit/test_balance.py) — `test_pending_conversion_delta_rebases_the_drift_check`, `test_pending_conversion_delta_does_not_mask_unrelated_drift`; [`tests/unit/test_conversion.py`](../tests/unit/test_conversion.py) — `test_build_prepared_conversion_populates_tracking_for_tracked_account`, `test_build_prepared_conversion_leaves_drift_baseline_alone_for_uncleared_rows`, `test_build_prepared_conversion_rebases_paired_transfer_leg_drift_baseline`.
+- Offline workflow: [`tests/workflows/test_offline_workflows.py`](../tests/workflows/test_offline_workflows.py) — `test_new_cleared_transaction_does_not_report_drift_workflow`, `test_hand_edited_converted_row_still_reports_drift_workflow`.
+- Integration: [`tests/integration/test_sync_cleared_conversion_drift.py`](../tests/integration/test_sync_cleared_conversion_drift.py) — seeds and converts a cleared row, enters a second cleared row, and asserts the next sync prepares the conversion while staying within tolerance.

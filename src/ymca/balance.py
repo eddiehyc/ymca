@@ -161,6 +161,7 @@ def build_tracking_update(
     rebuild: bool,
     now_utc: datetime,
     prompt_for_transfer_direction: TransferDirectionPrompt | None,
+    pending_conversion_delta_milliunits: int = 0,
 ) -> PreparedTrackingUpdate:
     """Build the :class:`PreparedTrackingUpdate` for a single tracked account.
 
@@ -176,6 +177,9 @@ def build_tracking_update(
         now_utc: clock reading used for the sentinel ``updated`` timestamp.
         prompt_for_transfer_direction: callback invoked for every 0-amount
             transfer whose direction cannot be inferred from the YNAB amount.
+        pending_conversion_delta_milliunits: net base-currency change this
+            run's FX writes will make to the account's ``cleared_balance``.
+            Applied to the drift baseline only (§12.6).
 
     Returns a fully-resolved :class:`PreparedTrackingUpdate` that the execute
     phase can apply without further lookups.
@@ -225,9 +229,14 @@ def build_tracking_update(
     else:
         new_balance = prior_balance + sum(c.signed_source_milliunits for c in contributions)
 
+    # ``cleared_balance`` was read before this run's FX writes, so cleared rows
+    # still awaiting conversion are counted there at their source-currency
+    # amount. Compare against the post-write figure instead (§12.6).
     drift = compute_drift_milliunits_stronger(
         tracked_source_milliunits=new_balance,
-        ynab_cleared_balance_base_milliunits=remote_account.cleared_balance_milliunits,
+        ynab_cleared_balance_base_milliunits=(
+            remote_account.cleared_balance_milliunits + pending_conversion_delta_milliunits
+        ),
         rule=rule,
     )
 
@@ -279,6 +288,7 @@ def build_tracking_update(
         create_sentinel=create_request,
         update_sentinel=update_request,
         memo_flips=tuple(memo_flips),
+        pending_conversion_delta_milliunits=pending_conversion_delta_milliunits,
     )
 
 

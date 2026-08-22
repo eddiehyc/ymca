@@ -179,12 +179,31 @@ class InMemoryGateway:
         return self.get_transaction_detail(self.plan_id, transaction_id)
 
     def set_cleared(self, transaction_id: str, cleared: ClearedStatus) -> None:
-        transaction = self._transactions_by_id.get(transaction_id)
-        if transaction is None or transaction.deleted:
-            raise AssertionError(f"Unknown active transaction {transaction_id!r}.")
+        transaction = self._active_transaction(transaction_id)
         self._server_knowledge += 1
         transaction.cleared = cleared
         transaction.modified_knowledge = self._server_knowledge
+
+    def set_amount(self, transaction_id: str, amount_milliunits: int) -> None:
+        """Simulate a user editing the amount in the YNAB UI."""
+        transaction = self._active_transaction(transaction_id)
+        self._server_knowledge += 1
+        transaction.amount_milliunits = amount_milliunits
+        transaction.modified_knowledge = self._server_knowledge
+
+    def add_transaction(self, transaction: SimulatedTransaction) -> None:
+        """Simulate a user entering a new transaction in the YNAB UI."""
+        if transaction.id in self._transactions_by_id:
+            raise AssertionError(f"Duplicate transaction id {transaction.id!r}.")
+        self._server_knowledge += 1
+        transaction.modified_knowledge = self._server_knowledge
+        self._transactions_by_id[transaction.id] = transaction
+
+    def _active_transaction(self, transaction_id: str) -> SimulatedTransaction:
+        transaction = self._transactions_by_id.get(transaction_id)
+        if transaction is None or transaction.deleted:
+            raise AssertionError(f"Unknown active transaction {transaction_id!r}.")
+        return transaction
 
     def find_active_transaction_by_payee(
         self, payee_name: str, *, account_id: str | None = None
