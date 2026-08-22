@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from itertools import count
 from typing import Literal
 
@@ -37,14 +37,22 @@ class FakeGateway:
     deleted_transactions: list[tuple[str, str]] = field(default_factory=list)
     create_transaction_ids: list[str] = field(default_factory=list)
     _generated_create_ids: count[int] = field(default_factory=lambda: count(start=1))
+    request_count: int = 0
+    request_times: list[datetime] = field(default_factory=list)
+
+    def _record_request(self) -> None:
+        self.request_count += 1
+        self.request_times.append(datetime.now(UTC))
 
     def list_plans(self, *, include_accounts: bool = False) -> tuple[RemotePlan, ...]:
         del include_accounts
+        self._record_request()
         if self.list_plans_error is not None:
             raise self.list_plans_error
         return self.plans
 
     def list_accounts(self, plan_id: str) -> AccountSnapshot:
+        self._record_request()
         return self.account_snapshots[plan_id]
 
     def list_transactions_by_account(
@@ -55,6 +63,7 @@ class FakeGateway:
         since_date: date | None = None,
         last_knowledge_of_server: int | None = None,
     ) -> TransactionSnapshot:
+        self._record_request()
         self.list_transactions_by_account_calls.append(
             (plan_id, account_id, since_date, last_knowledge_of_server)
         )
@@ -65,26 +74,33 @@ class FakeGateway:
 
     def get_transaction_detail(self, plan_id: str, transaction_id: str) -> RemoteTransactionDetail:
         del plan_id
+        self._record_request()
         return self.transaction_details[transaction_id]
 
     def update_transaction(self, plan_id: str, request: TransactionUpdateRequest) -> None:
         del plan_id
+        self._record_request()
         self.updates.append(request)
 
     def update_transactions(
         self, plan_id: str, requests: Sequence[TransactionUpdateRequest]
     ) -> None:
+        if not requests:
+            return
+        self._record_request()
         request_batch = tuple(requests)
         self.update_batches.append((plan_id, request_batch))
         self.updates.extend(request_batch)
 
     def create_transaction(self, plan_id: str, request: NewTransactionRequest) -> str:
+        self._record_request()
         self.created_transactions.append((plan_id, request))
         if self.create_transaction_ids:
             return self.create_transaction_ids.pop(0)
         return f"fake-created-{next(self._generated_create_ids)}"
 
     def delete_transaction(self, plan_id: str, transaction_id: str) -> None:
+        self._record_request()
         self.deleted_transactions.append((plan_id, transaction_id))
 
 

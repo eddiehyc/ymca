@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -22,6 +22,9 @@ from .models import (
     TransactionUpdateRequest,
 )
 
+# YNAB enforces 200 HTTP requests per API key per rolling hour.
+YNAB_HOURLY_REQUEST_LIMIT = 200
+
 
 class YnabClient:
     def __init__(self, api_key: str) -> None:
@@ -30,6 +33,8 @@ class YnabClient:
         self._plans_api: Any | None = None
         self._accounts_api: Any | None = None
         self._transactions_api: Any | None = None
+        self.request_count = 0
+        self.request_times: list[datetime] = []
 
     def __enter__(self) -> YnabClient:
         configuration = ynab.Configuration(access_token=self._api_key)
@@ -47,6 +52,7 @@ class YnabClient:
 
     def list_plans(self, *, include_accounts: bool = False) -> tuple[RemotePlan, ...]:
         plans_api = self._require_api(self._plans_api, "PlansApi")
+        self._record_request()
         try:
             response = plans_api.get_plans(include_accounts=include_accounts)
         except ApiException as exc:
@@ -59,6 +65,7 @@ class YnabClient:
 
     def list_accounts(self, plan_id: str) -> AccountSnapshot:
         accounts_api = self._require_api(self._accounts_api, "AccountsApi")
+        self._record_request()
         try:
             response = accounts_api.get_accounts(plan_id)
         except ApiException as exc:
@@ -81,6 +88,7 @@ class YnabClient:
         last_knowledge_of_server: int | None = None,
     ) -> TransactionSnapshot:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        self._record_request()
         try:
             response = transactions_api.get_transactions_by_account(
                 plan_id,
@@ -103,6 +111,7 @@ class YnabClient:
 
     def get_transaction_detail(self, plan_id: str, transaction_id: str) -> RemoteTransactionDetail:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        self._record_request()
         try:
             response = transactions_api.get_transaction_by_id(plan_id, transaction_id)
         except ApiException as exc:
@@ -147,6 +156,7 @@ class YnabClient:
         payload = ynab.PutTransactionWrapper(
             transaction=ynab.ExistingTransaction(**existing_kwargs)
         )
+        self._record_request()
         try:
             transactions_api.update_transaction(plan_id, request.transaction_id, payload)
         except ApiException as exc:
@@ -167,6 +177,7 @@ class YnabClient:
                 self._build_patch_transaction(request) for request in requests
             ]
         )
+        self._record_request()
         try:
             transactions_api.update_transactions(plan_id, payload)
         except ApiException as exc:
@@ -216,6 +227,7 @@ class YnabClient:
         payload = ynab.PostTransactionsWrapper(
             transaction=ynab.NewTransaction(**new_kwargs)
         )
+        self._record_request()
         try:
             response = transactions_api.create_transaction(plan_id, payload)
         except ApiException as exc:
@@ -244,6 +256,7 @@ class YnabClient:
 
     def delete_transaction(self, plan_id: str, transaction_id: str) -> None:
         transactions_api = self._require_api(self._transactions_api, "TransactionsApi")
+        self._record_request()
         try:
             transactions_api.delete_transaction(plan_id, transaction_id)
         except ApiException as exc:
@@ -318,6 +331,10 @@ class YnabClient:
             category_id=_optional_string(getattr(raw_subtransaction, "category_id", None)),
             memo=getattr(raw_subtransaction, "memo", None),
         )
+
+    def _record_request(self) -> None:
+        self.request_count += 1
+        self.request_times.append(datetime.now(UTC))
 
     def _require_api(self, api: Any | None, api_name: str) -> Any:
         if api is None:

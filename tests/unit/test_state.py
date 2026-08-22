@@ -6,6 +6,7 @@ Covers the YAML round-trip, version validation, error translation, and the
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from ymca.errors import StateError
 from ymca.models import AppState, PlanState
 from ymca.state import (
     load_state,
+    merge_api_request_times,
     plan_state_for,
     save_state,
     upsert_plan_state,
@@ -25,6 +27,7 @@ def test_load_state_returns_empty_state_when_file_missing(tmp_path: Path) -> Non
 
     assert state.version == 1
     assert dict(state.plans) == {}
+    assert state.api_request_times == ()
 
 
 def test_load_state_raises_on_unsupported_version(tmp_path: Path) -> None:
@@ -92,6 +95,7 @@ def test_save_state_round_trips_values(tmp_path: Path) -> None:
     assert round_tripped.plans["personal"].plan_id == "plan-1"
     assert round_tripped.plans["personal"].account_ids == {"hkd": "acct-1"}
     assert round_tripped.plans["personal"].server_knowledge == 7
+    assert round_tripped.api_request_times == ()
 
 
 def test_plan_state_for_returns_none_when_missing() -> None:
@@ -273,3 +277,63 @@ def test_upsert_plan_state_replaces_sentinel_ids_when_provided() -> None:
         "hkd": "new-sent",
         "gbp": "gbp-sent",
     }
+
+
+def test_save_state_round_trips_api_request_times(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.yaml"
+    stamp = datetime(2026, 8, 22, 4, 12, 3, 1000, tzinfo=UTC)
+    state = AppState(version=1, plans={}, api_request_times=(stamp,))
+
+    save_state(state_path, state)
+    loaded = load_state(state_path)
+
+    assert loaded.api_request_times == (stamp,)
+    assert "api_request_times" in state_path.read_text(encoding="utf-8")
+
+
+def test_save_state_omits_empty_api_request_times(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.yaml"
+    save_state(state_path, AppState(version=1, plans={}))
+    assert "api_request_times" not in state_path.read_text(encoding="utf-8")
+
+
+def test_load_state_tolerates_missing_api_request_times(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.yaml"
+    state_path.write_text("version: 1\nplans: {}\n", encoding="utf-8")
+    assert load_state(state_path).api_request_times == ()
+
+
+def test_load_state_raises_when_api_request_times_is_not_a_list(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.yaml"
+    state_path.write_text("version: 1\nplans: {}\napi_request_times: {}\n", encoding="utf-8")
+    with pytest.raises(StateError, match="api_request_times"):
+        load_state(state_path)
+
+
+def test_merge_api_request_times_drops_entries_older_than_one_hour() -> None:
+    now = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+    stale = now - timedelta(hours=1, seconds=1)
+    fresh = now - timedelta(minutes=10)
+    added = now - timedelta(seconds=1)
+    state = AppState(version=1, plans={}, api_request_times=(stale, fresh))
+
+    merged = merge_api_request_times(state, (added,), now=now)
+
+    assert merged.api_request_times == (fresh, added)
+
+
+def test_upsert_plan_state_preserves_api_request_times() -> None:
+    stamp = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+    state = AppState(
+        version=1,
+        plans={},
+        api_request_times=(stamp,),
+    )
+    updated = upsert_plan_state(
+        state,
+        alias="personal",
+        plan_id="p1",
+        account_ids={},
+        server_knowledge=1,
+    )
+    assert updated.api_request_times == (stamp,)

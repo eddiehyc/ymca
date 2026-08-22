@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from .balance import DISPLAY_TOLERANCE_STRONGER_UNITS, TransferDirectionPrompt
@@ -11,11 +11,11 @@ from .config import load_config, write_config_template
 from .conversion import build_prepared_conversion, execute_conversion, resolve_bindings
 from .errors import UserInputError, YmcaError
 from .memo import format_balance_milliunits, format_milliunits
-from .models import AmbiguousTransfer
+from .models import AmbiguousTransfer, AppState
 from .paths import default_config_path, default_state_path
 from .secrets import load_api_key
-from .state import load_state, save_state
-from .ynab_client import YnabClient
+from .state import load_state, merge_api_request_times, save_state
+from .ynab_client import YNAB_HOURLY_REQUEST_LIMIT, YnabClient
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -155,8 +155,12 @@ def _handle_config_check(*, path: Path) -> int:
     print("Config schema: OK")
     print("API key: OK")
 
+    request_times: tuple[datetime, ...] = ()
     with YnabClient(api_key) as gateway:
         bindings = resolve_bindings(config.plan, gateway)
+        request_times = _gateway_request_times(gateway)
+
+    rolling_hour = _persist_api_usage(default_state_path(), request_times)
 
     print("YNAB auth: OK")
     print(f"Plan: OK ({config.plan.name})")
@@ -170,6 +174,7 @@ def _handle_config_check(*, path: Path) -> int:
             "Note: discover and sync still use YMCA_CONFIG_PATH or the default config path "
             "unless you set YMCA_CONFIG_PATH."
         )
+    _print_api_request_count(this_run=len(request_times), rolling_hour=rolling_hour)
 
     return 0
 
@@ -181,11 +186,16 @@ def _handle_discover() -> int:
         configured_api_key_file = load_config(config_path).secrets.api_key_file
 
     api_key = load_api_key(api_key_file=configured_api_key_file)
+    request_times: tuple[datetime, ...] = ()
     with YnabClient(api_key) as gateway:
         plans = gateway.list_plans(include_accounts=True)
+        request_times = _gateway_request_times(gateway)
+
+    rolling_hour = _persist_api_usage(default_state_path(), request_times)
 
     if not plans:
         print("No YNAB plans found.")
+        _print_api_request_count(this_run=len(request_times), rolling_hour=rolling_hour)
         return 0
 
     for plan in plans:
@@ -197,6 +207,7 @@ def _handle_discover() -> int:
             if account.deleted or account.closed:
                 continue
             print(f"  - {account.name}")
+    _print_api_request_count(this_run=len(request_times), rolling_hour=rolling_hour)
     return 0
 
 
@@ -217,6 +228,7 @@ def _handle_sync(
         apply_updates=apply_updates,
     )
 
+    request_times: tuple[datetime, ...] = ()
     with YnabClient(api_key) as gateway:
         prepared = build_prepared_conversion(
             plan=config.plan,
@@ -234,11 +246,17 @@ def _handle_sync(
             gateway=gateway,
             apply_updates=apply_updates,
         )
+        request_times = _gateway_request_times(gateway)
 
-    if apply_updates:
-        save_state(state_path, outcome.new_state)
+    persisted_state = outcome.new_state if apply_updates else state
+    rolling_hour = _persist_api_usage(
+        state_path,
+        request_times,
+        base_state=persisted_state,
+    )
 
     _print_conversion_summary(outcome)
+    _print_api_request_count(this_run=len(request_times), rolling_hour=rolling_hour)
     return 0
 
 
@@ -312,6 +330,46 @@ def _render_table(
     lines.extend(_line(row) for row in string_rows)
     lines.append(_rule("└", "┴", "┘"))
     return "\n".join(lines)
+
+
+def _gateway_request_times(gateway: object) -> tuple[datetime, ...]:
+    raw_times = getattr(gateway, "request_times", None)
+    if isinstance(raw_times, list):
+        return tuple(item for item in raw_times if isinstance(item, datetime))
+    count = int(getattr(gateway, "request_count", 0))
+    stamp = datetime.now(UTC)
+    return tuple(stamp for _ in range(count))
+
+
+def _persist_api_usage(
+    state_path: Path,
+    new_times: Sequence[datetime],
+    *,
+    base_state: AppState | None = None,
+) -> int:
+    loaded = load_state(state_path)
+    if base_state is not None:
+        current = AppState(
+            version=base_state.version,
+            plans=base_state.plans,
+            api_request_times=loaded.api_request_times,
+        )
+    else:
+        current = loaded
+    updated = merge_api_request_times(
+        current,
+        new_times,
+        now=datetime.now(UTC),
+    )
+    save_state(state_path, updated)
+    return len(updated.api_request_times)
+
+
+def _print_api_request_count(*, this_run: int, rolling_hour: int) -> None:
+    print(
+        f"YNAB API requests: {this_run} this run; "
+        f"{rolling_hour} / {YNAB_HOURLY_REQUEST_LIMIT} in the rolling hour"
+    )
 
 
 def _print_table(

@@ -220,6 +220,8 @@ def test_ynab_client_list_plans_maps_accounts(monkeypatch: MonkeyPatch) -> None:
     )
     with YnabClient("secret") as client:
         plans = client.list_plans(include_accounts=True)
+        assert client.request_count == 1
+        assert len(client.request_times) == 1
 
     assert len(plans) == 1
     assert plans[0].id == "p1"
@@ -246,6 +248,7 @@ def test_ynab_client_list_plans_translates_api_exception(monkeypatch: MonkeyPatc
     assert "status=401" in message
     assert "reason=Unauthorized" in message
     assert "body=bad token" in message
+    assert client.request_count == 1
 
 
 def test_ynab_client_list_accounts_maps_snapshot(monkeypatch: MonkeyPatch) -> None:
@@ -680,6 +683,7 @@ def test_ynab_client_update_transactions_noop_on_empty(monkeypatch: MonkeyPatch)
     with YnabClient("secret") as client:
         client.update_transactions("p1", ())
     assert _TransactionsApi.called is False
+    assert client.request_count == 0
 
 
 def test_ynab_client_update_transactions_wraps_exception(monkeypatch: MonkeyPatch) -> None:

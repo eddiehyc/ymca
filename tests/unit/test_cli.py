@@ -89,6 +89,7 @@ fx_rates:
         "ymca.cli.load_api_key",
         lambda **_: "secret",
     )
+    monkeypatch.setenv("YMCA_STATE_PATH", str(tmp_path / "state.yaml"))
     monkeypatch.setattr("ymca.cli.YnabClient", lambda api_key: FakeGatewayContext(gateway))
 
     exit_code = main(["config", "check", "--path", str(config_path)])
@@ -98,6 +99,7 @@ fx_rates:
     assert "Config schema: OK" in captured.out
     assert "YNAB auth: OK" in captured.out
     assert "Account travel_hkd: OK" in captured.out
+    assert "YNAB API requests: 2 this run; 2 / 200 in the rolling hour" in captured.out
 
 
 def test_sync_apply_updates_state_file(
@@ -187,11 +189,15 @@ fx_rates:
     assert exit_code == 0
     assert "Mode: APPLY" in captured.out
     assert "Writes applied: 1" in captured.out
+    assert "this run;" in captured.out
+    assert "/ 200 in the rolling hour" in captured.out
     saved_state = load_state(state_path)
     assert saved_state.plans["personal"].server_knowledge == 55
+    assert len(saved_state.api_request_times) > 0
 
 
 def test_discover_hides_closed_accounts(
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
@@ -212,6 +218,7 @@ def test_discover_hides_closed_accounts(
     )
 
     monkeypatch.setattr("ymca.cli.load_api_key", lambda **_: "secret")
+    monkeypatch.setenv("YMCA_STATE_PATH", str(tmp_path / "state.yaml"))
     monkeypatch.setattr("ymca.cli.YnabClient", lambda api_key: FakeGatewayContext(gateway))
 
     exit_code = main(["discover"])
@@ -222,6 +229,32 @@ def test_discover_hides_closed_accounts(
     assert "Open HKD" in captured.out
     assert "Closed HKD" not in captured.out
     assert "Deleted HKD" not in captured.out
+    assert "YNAB API requests: 1 this run; 1 / 200 in the rolling hour" in captured.out
+
+
+def test_discover_accumulates_rolling_hour_across_runs(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("YMCA_STATE_PATH", str(tmp_path / "state.yaml"))
+    monkeypatch.setattr("ymca.cli.load_api_key", lambda **_: "secret")
+
+    def _client(_api_key: str) -> FakeGatewayContext:
+        return FakeGatewayContext(
+            FakeGateway(
+                plans=(RemotePlan(id="plan-1", name="Example Plan", accounts=()),),
+                account_snapshots={},
+                transaction_details={},
+            )
+        )
+
+    monkeypatch.setattr("ymca.cli.YnabClient", _client)
+    assert main(["discover"]) == 0
+    capsys.readouterr()
+    assert main(["discover"]) == 0
+    captured = capsys.readouterr()
+    assert "YNAB API requests: 1 this run; 2 / 200 in the rolling hour" in captured.out
 
 
 def test_main_translates_ymca_error_to_exit_code_one(
@@ -257,10 +290,12 @@ def test_main_translates_keyboard_interrupt_to_one_thirty(
 
 
 def test_discover_reports_when_no_plans_are_returned(
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     gateway = FakeGateway(plans=(), account_snapshots={}, transaction_details={})
+    monkeypatch.setenv("YMCA_STATE_PATH", str(tmp_path / "state.yaml"))
     monkeypatch.setattr("ymca.cli.load_api_key", lambda **_: "secret")
     monkeypatch.setattr("ymca.cli.YnabClient", lambda api_key: FakeGatewayContext(gateway))
 
@@ -272,6 +307,7 @@ def test_discover_reports_when_no_plans_are_returned(
 
 
 def test_discover_reports_when_plan_has_no_accounts(
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
@@ -280,6 +316,7 @@ def test_discover_reports_when_plan_has_no_accounts(
         account_snapshots={},
         transaction_details={},
     )
+    monkeypatch.setenv("YMCA_STATE_PATH", str(tmp_path / "state.yaml"))
     monkeypatch.setattr("ymca.cli.load_api_key", lambda **_: "secret")
     monkeypatch.setattr("ymca.cli.YnabClient", lambda api_key: FakeGatewayContext(gateway))
 

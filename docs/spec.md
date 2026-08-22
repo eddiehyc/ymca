@@ -37,6 +37,8 @@ The product is intentionally local-first:
 
 Creates a placeholder config file with no secrets and no YNAB IDs.
 
+Does not contact the YNAB API.
+
 ### 3.2 `ymca config check [--path PATH]`
 
 Performs an online validation pass:
@@ -47,11 +49,15 @@ Performs an online validation pass:
 - resolves the configured budget name
 - resolves configured account names
 
+Prints `YNAB API requests: N this run; M / 200 in the rolling hour`. `N` is this process; `M` is local timestamps still inside the trailing hour (including this run). YNAB caps each API key at 200 requests per rolling hour. The rolling total is stored in the runtime state file (`YMCA_STATE_PATH` / default state path), not the `--path` config file.
+
 ### 3.3 `ymca discover`
 
 Lists visible YNAB budgets and open accounts to help the user fill in the config file.
 
 Closed and deleted accounts are not shown.
+
+Prints the same this-run and rolling-hour YNAB request counters as `config check`, using the runtime state file.
 
 ### 3.4 `ymca sync [--account ALIAS]... [--apply] [--bootstrap-since YYYY-MM-DD] [--rebuild-balance]`
 
@@ -63,6 +69,7 @@ Closed and deleted accounts are not shown.
 - saves refreshed `server_knowledge` after successful apply runs
 - if `--rebuild-balance` is supplied, switches tracked accounts into full-scan mode (see §12); mutually exclusive with `--bootstrap-since`
 - prints prepared updates, skipped rows, and local-currency tracking in aligned tables
+- prints `YNAB API requests: N this run; M / 200 in the rolling hour` for HTTP calls made during the run (reads, writes, and the post-apply knowledge refresh). Empty batch updates are not counted. `M` includes earlier runs still inside the trailing hour.
 
 ## 4. Runtime Path Resolution
 
@@ -163,6 +170,8 @@ Example:
 
 ```yaml
 version: 1
+api_request_times:
+  - "2026-08-22T04:12:03.001000Z"
 plans:
   personal:
     plan_id: 00000000-0000-0000-0000-000000000000
@@ -181,14 +190,15 @@ It stores:
 - resolved YNAB account IDs
 - `server_knowledge` per configured plan alias from the config file
 - `sentinel_ids` per configured plan alias: a map of tracked-account aliases to the YNAB transaction id of that account's local-currency sentinel (see §12). Omitted entirely for plans with no tracked accounts. Required so quiet delta runs can still locate the sentinel, which otherwise would not appear in the delta because `server_knowledge` already advanced past its last write.
+- `api_request_times`: UTC timestamps of YNAB HTTP calls made by this CLI on this machine. Used to estimate usage against YNAB's **200 requests per rolling hour** cap. The list is local-only, omitted when empty, and pruned to the trailing hour on every write. It is not YNAB's server-side remaining quota.
 
 ## 6. Sync Model
 
 - YNAB delta sync is the default model.
 - Normal runs call YNAB with `last_knowledge_of_server` when saved state exists.
 - First-time runs use a bootstrap date supplied through `--bootstrap-since` or an interactive prompt.
-- Dry runs do not persist state.
-- Successful apply runs persist refreshed `server_knowledge`.
+- Dry runs do not persist conversion or `server_knowledge` updates. They do persist `api_request_times` so the rolling-hour counter stays accurate.
+- Successful apply runs persist refreshed `server_knowledge` and `api_request_times`.
 - If writes were performed, YMCA performs a follow-up delta fetch and saves the post-write `server_knowledge`.
 - **Every transactions fetch carries an explicit `since_date`.** YNAB's transactions endpoints silently window results to roughly the trailing 12 months when `since_date` is omitted — even when `last_knowledge_of_server` is supplied. When no user-facing date applies (delta runs, rebuild full scans, the post-write knowledge refresh), YMCA sends the fixed floor `FULL_HISTORY_SINCE_DATE` (`2000-01-01`) to disable the window; a `--bootstrap-since` date always wins when provided. Without the floor, rebuild would drop rows older than the window and delta runs would never surface edits to old rows (edge case E32 in `docs/edge-cases.md`).
 

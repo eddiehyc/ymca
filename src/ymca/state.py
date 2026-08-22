@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,8 @@ import yaml
 
 from .errors import StateError
 from .models import STATE_VERSION, AppState, PlanState
+
+API_REQUEST_ROLLING_WINDOW = timedelta(hours=1)
 
 
 def load_state(path: Path) -> AppState:
@@ -59,19 +62,49 @@ def load_state(path: Path) -> AppState:
             sentinel_ids=sentinel_ids,
         )
 
-    return AppState(version=version, plans=plans)
+    return AppState(
+        version=version,
+        plans=plans,
+        api_request_times=_parse_api_request_times(raw.get("api_request_times")),
+    )
 
 
 def save_state(path: Path, state: AppState) -> None:
-    payload = {
+    payload: dict[str, Any] = {
         "version": state.version,
         "plans": {
             alias: _plan_payload(plan_state)
             for alias, plan_state in state.plans.items()
         },
     }
+    if state.api_request_times:
+        payload["api_request_times"] = [
+            _format_utc(timestamp) for timestamp in state.api_request_times
+        ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def merge_api_request_times(
+    state: AppState,
+    new_times: Sequence[datetime],
+    *,
+    now: datetime,
+) -> AppState:
+    """Append ``new_times`` and drop timestamps outside the rolling hour."""
+    now_utc = _as_utc(now)
+    cutoff = now_utc - API_REQUEST_ROLLING_WINDOW
+    kept = tuple(
+        timestamp
+        for timestamp in (_as_utc(item) for item in state.api_request_times)
+        if timestamp >= cutoff
+    )
+    added = tuple(_as_utc(item) for item in new_times if _as_utc(item) >= cutoff)
+    return AppState(
+        version=state.version,
+        plans=state.plans,
+        api_request_times=(*kept, *added),
+    )
 
 
 def _plan_payload(plan_state: PlanState) -> dict[str, Any]:
@@ -114,7 +147,11 @@ def upsert_plan_state(
         server_knowledge=server_knowledge,
         sentinel_ids=merged_sentinel_ids,
     )
-    return AppState(version=STATE_VERSION, plans=plans)
+    return AppState(
+        version=STATE_VERSION,
+        plans=plans,
+        api_request_times=state.api_request_times,
+    )
 
 
 def _load_yaml_mapping(path: Path) -> Mapping[str, Any]:
@@ -142,3 +179,36 @@ def _parse_int(value: Any, field_name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise StateError(f"{field_name} must be an integer.")
     return value
+
+
+def _parse_api_request_times(value: Any) -> tuple[datetime, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise StateError("api_request_times must be a list.")
+    return tuple(
+        _parse_utc_datetime(item, f"api_request_times[{index}]")
+        for index, item in enumerate(value)
+    )
+
+
+def _parse_utc_datetime(value: Any, field_name: str) -> datetime:
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        raise StateError(f"{field_name} must be an ISO-8601 timestamp.")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StateError(f"{field_name} must be an ISO-8601 timestamp.") from exc
+    return _as_utc(parsed)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _format_utc(value: datetime) -> str:
+    return _as_utc(value).isoformat().replace("+00:00", "Z")

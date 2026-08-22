@@ -78,6 +78,12 @@ class PlanState:
 class AppState:
     version: int
     plans: Mapping[str, PlanState]
+    api_request_times: tuple[datetime, ...] = ()
+    """UTC timestamps of YNAB HTTP calls made by this machine.
+
+    Used to estimate usage against YNAB's 200-request rolling-hour cap.
+    Entries older than one hour are dropped on the next write.
+    """
 
 
 @dataclass(frozen=True, slots=True)
